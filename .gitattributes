@@ -1,0 +1,10 @@
+# 统一换行符：代码文件使用 LF，Windows 批处理使用 CRLF
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件不转换
+*.ico binary
+*.png binary
+*.jpg binary
