@@ -1,26 +1,28 @@
 @echo off
-chcp 65001 >nul
-REM 一键构建 EXE：安装依赖并调用 PyInstaller spec 配置打包
+REM One-click EXE build: install dependencies and package with PyInstaller spec.
+REM Note: keep this file ASCII-only and CRLF line endings for cmd.exe compatibility.
+cd /d "%~dp0.."
+
 echo ==========================================
-echo  英雄联盟违规标记查询工具 - EXE 构建
+echo   LoLMatchQuery - EXE Build
 echo ==========================================
 
-echo [1/2] 安装依赖...
+echo [1/2] Installing dependencies...
 pip install -r requirements.txt
 if errorlevel 1 (
-    echo 依赖安装失败，请检查网络后重试
+    echo Failed to install dependencies, please check your network.
     pause
     exit /b 1
 )
 
-echo [2/2] 开始打包...
+echo [2/2] Building EXE...
 pyinstaller --noconfirm LoLMatchQuery.spec
 if errorlevel 1 (
-    echo 打包失败，请查看上方错误信息
+    echo Build failed, see the error message above.
     pause
     exit /b 1
 )
 
 echo.
-echo 构建完成！产物: dist\LoLMatchQuery.exe
+echo Build complete! Output: dist\LoLMatchQuery.exe
 pause
