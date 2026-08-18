@@ -60,6 +60,9 @@ class PlayerCardMixin:
         card._champion_id = champion_id
         card._icon_label = None
         card._placeholder_label = None
+        # 记录基础边框（自己=金/违规=红/普通），取消选中时还原
+        card._base_border_color = border_color
+        card._base_border_width = border_w
 
         content = ctk.CTkFrame(card, fg_color='transparent')
         content.pack(fill='x', padx=8, pady=6)
@@ -159,17 +162,39 @@ class PlayerCardMixin:
 
         return card
 
+    def _get_champion_display(self, champion_id):
+        """生成英雄显示文本；champion_id为0表示选人阶段未展示英雄"""
+        champion_cn = self.champion_data.get_champion_name(champion_id)
+        if champion_cn:
+            return f'{champion_cn} (ID:{champion_id})'
+        if champion_id:
+            return f'ID:{champion_id}'
+        return '未选定（选人阶段不显示英雄）'
+
     def _on_card_selected(self, player, card):
         """玩家卡片被点击：高亮选中并更新详情"""
         if self._selected_card and self._selected_card.winfo_exists():
-            self._selected_card.configure(fg_color=self.COLORS['card_hover'])
-        card.configure(fg_color=self.COLORS['selected'])
+            # 还原上一张卡片的背景与基础边框（自己=金/违规=红/普通）
+            self._selected_card.configure(
+                fg_color=self.COLORS['card_hover'],
+                border_color=getattr(
+                    self._selected_card, '_base_border_color', self.COLORS['card_hover']),
+                border_width=getattr(self._selected_card, '_base_border_width', 1),
+            )
+        # 选中态：蓝调背景 + 蓝色加粗边框，与悬停态明显区分
+        card.configure(
+            fg_color=self.COLORS['selected'],
+            border_color=self.COLORS['blue'],
+            border_width=2,
+        )
         self._selected_card = card
         self.selected_player = player
 
+        # 自动展开详情面板，点击后立即可见选中反馈
+        self._expand_detail()
+
         champion_id = player.get('champion_id', 0)
-        champion_cn = self.champion_data.get_champion_name(champion_id)
-        champion_display = f'{champion_cn} (ID:{champion_id})' if champion_cn else f'ID:{champion_id}'
+        champion_display = self._get_champion_display(champion_id)
 
         puuid = player.get('puuid', '')
         violation_count = self.violation_counts.get(puuid, 0) if puuid else 0
@@ -244,9 +269,7 @@ class PlayerCardMixin:
                     current = self.selected_player
                     if current and current.get('puuid') == puuid:
                         champion_id = current.get('champion_id', 0)
-                        champion_cn = self.champion_data.get_champion_name(champion_id)
-                        champion_display = (f'{champion_cn} (ID:{champion_id})'
-                                            if champion_cn else f'ID:{champion_id}')
+                        champion_display = self._get_champion_display(champion_id)
 
                         detail_lines = [
                             f'召唤师: {current["riot_id"]}',

@@ -87,11 +87,11 @@ class LCUClient:
         # gameflow-phase兜底轮询线程
         self.phase_poll_thread = None
 
-        # 技能名称映射
+        # 召唤师技能ID -> 中文名（ID 以 Data Dragon summoner.json 为准，勿凭印象填写）
         self.spell_cache = {
-            1: '治疗', 2: '清晰术', 3: '虚弱', 4: '净化', 5: '屏障',
-            6: '引燃', 7: '闪现', 11: '惩戒', 12: '传送', 13: '护盾',
-            14: '眩晕', 21: '重击', 32: '雪球'
+            1: '净化', 3: '虚弱', 4: '闪现', 6: '幽灵疾步', 7: '治疗术',
+            11: '惩戒', 12: '传送', 13: '清晰术', 14: '引燃', 21: '屏障',
+            30: '护驾！', 31: '魄罗投掷', 32: '标记', 39: '标记',
         }
 
     def _log(self, msg):
@@ -278,9 +278,10 @@ class LCUClient:
                 'myself': result['myself'],
                 'stage': 'champ_select'
             }
-            # 缓存BP对局数据，供战绩接口失败时兜底
+            # 缓存完整BP对局数据（含英雄），供进入游戏后立即展示
             self.cached_bp_match_data = match_data
-            self._send_match(match_data)
+            # 发给UI的数据剥离英雄信息：选人阶段英雄频繁更换，避免UI卡片反复重建闪烁
+            self._send_match(self._strip_champion_info(match_data))
             # BP阶段缓存gameId，供进入游戏后违规举报使用
             game_id = self.get_current_game_id()
             if game_id and game_id != self.cached_game_id:
@@ -288,6 +289,34 @@ class LCUClient:
                 self._log(f'BP阶段缓存对局ID: {game_id}')
         except Exception as e:
             self._log(f'解析英雄选择数据失败: {type(e).__name__}: {e}')
+
+    def _strip_champion_info(self, match_data):
+        """复制对局数据并清空英雄信息（选人阶段专用）
+
+        选人阶段玩家频繁更换英雄，若把 champion_id 发给UI，
+        卡片比较会被触发重建导致界面闪烁；进入游戏后由
+        cached_bp_match_data（完整数据）或 gameflow 数据补齐英雄。
+        """
+        stripped = {
+            'my_team': [],
+            'enemy_team': [],
+            'myself': None,
+            'stage': match_data.get('stage', 'champ_select'),
+        }
+        for player in match_data.get('my_team', []):
+            item = dict(player)
+            item['champion_id'] = 0
+            stripped['my_team'].append(item)
+        for player in match_data.get('enemy_team', []):
+            item = dict(player)
+            item['champion_id'] = 0
+            stripped['enemy_team'].append(item)
+        myself = match_data.get('myself')
+        if myself:
+            item = dict(myself)
+            item['champion_id'] = 0
+            stripped['myself'] = item
+        return stripped
 
     def _get_current_summoner(self):
         """获取当前召唤师信息"""
@@ -399,7 +428,9 @@ class LCUClient:
         return ''
 
     def _get_spell_name(self, spell_id):
-        """根据技能ID获取技能名称"""
+        """根据技能ID获取技能名称；0/空表示尚未选定，返回空字符串"""
+        if not spell_id:
+            return ''
         return self.spell_cache.get(spell_id, f'技能{spell_id}')
 
     def _get_position_name(self, position):
@@ -436,10 +467,10 @@ class LCUClient:
                     'myself': result['myself'],
                     'stage': 'champ_select'
                 }
-                # 缓存BP对局数据，供战绩接口失败时兜底
+                # 缓存完整BP对局数据（含英雄），供进入游戏后立即展示
                 self.cached_bp_match_data = match_data
-                # 即使没有识别到自己，也显示队伍信息
-                self._send_match(match_data)
+                # 发给UI的数据剥离英雄信息：选人阶段英雄频繁更换，避免UI卡片反复重建闪烁
+                self._send_match(self._strip_champion_info(match_data))
                 # BP阶段缓存gameId，供进入游戏后违规举报使用
                 game_id = self.get_current_game_id()
                 if game_id and game_id != self.cached_game_id:

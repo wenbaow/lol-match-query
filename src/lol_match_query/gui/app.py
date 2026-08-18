@@ -41,7 +41,7 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin):
         'orange': '#FB8C00',
         'text_primary': '#E8E8E8',
         'text_secondary': '#9AA0A6',
-        'selected': '#3d4452',
+        'selected': '#31506E',
     }
 
     def __init__(self, root):
