@@ -38,7 +38,17 @@ def main():
     root.geometry('780x760')
     root.minsize(560, 600)
     app = MatchQueryGUI(root)
+    root.protocol('WM_DELETE_WINDOW', lambda: _on_close(root, app))
     root.mainloop()
+
+
+def _on_close(root, app):
+    """关闭窗口：先优雅断开 Agent 客户端，再销毁主窗口。"""
+    try:
+        app.agent_service.close()
+    except Exception:
+        pass
+    root.destroy()
 
 
 if __name__ == '__main__':

@@ -15,6 +15,7 @@ import requests
 import psutil
 import urllib3
 import websocket
+from agentquay import agent_tool
 
 urllib3.disable_warnings()
 
@@ -661,6 +662,7 @@ class LCUClient:
             self._log(f'从gameflow提取玩家信息失败: {type(e).__name__}: {e}')
             return False
 
+    @agent_tool("search_summoner", description="通过完整 Riot ID（游戏名#TAG）搜索召唤师，返回 PUUID 与 Riot ID 信息")
     def search_summoner(self, riot_id):
         """通过完整 Riot ID 搜索召唤师信息
 

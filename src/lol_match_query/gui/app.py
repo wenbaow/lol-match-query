@@ -14,9 +14,10 @@ from ..services.violation import ViolationClient
 from ..services.champions import ChampionDataProvider
 from .player_card import PlayerCardMixin
 from .dialogs import DialogMixin
+from .agent_ui import AgentUIMixin
 
 
-class MatchQueryGUI(PlayerCardMixin, DialogMixin):
+class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
     PHASE_DESCRIPTIONS = {
         'None': '空闲 / 客户端主界面',
         'Lobby': '组队房间',
@@ -74,6 +75,8 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin):
         self.champion_data.initialize_async(
             done_callback=lambda: self.root.after(0, self._refresh_cards_if_needed)
         )
+        # 启动 AgentQuay 接入（后台连接 + 队列轮询），Agent 即可通过 MCP 调用本应用工具
+        self.start_agent_service()
 
     def _build_ui(self):
         self.root.configure(fg_color=self.COLORS['bg'])
@@ -143,6 +146,12 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin):
             text_color=self.COLORS['text_secondary']
         )
         self.phase_label.pack(side='right', padx=25)
+
+        self.agent_label = ctk.CTkLabel(
+            status_inner, text='Agent: 未接入', font=('Microsoft YaHei', 11),
+            text_color=self.COLORS['text_secondary']
+        )
+        self.agent_label.pack(side='right', padx=25)
 
         # ===== 按钮栏 =====
         btn_frame = ctk.CTkFrame(main_frame, fg_color='transparent')

@@ -18,11 +18,12 @@
 - 🔍 **召唤师搜索**：通过完整 Riot ID（游戏名#TAG）搜索召唤师并查询其违规记录
 - 🖼️ **英雄头像本地缓存**：Data Dragon CDN 下载头像并缓存至 `~/.lol_helper/icons/`，启动快、不重复下载
 - 📱 **响应式界面**：窗口缩放自动切换队伍面板并排 / 堆叠布局
+- 🤖 **AI Agent 接入（AgentQuay）**：把召唤师搜索、违规查询/标记等能力暴露为标准 MCP 工具，AI Agent（zcode / opencode / codex / Claude Desktop …）可直接调用，危险操作需用户确认
 
 ## 运行环境
 
 - Windows 10/11
-- Python 3.8+（仅源码运行需要；普通用户可直接使用打包好的 exe）
+- Python 3.10+（仅源码运行需要；普通用户可直接使用打包好的 exe）
 
 ## 快速开始
 
@@ -57,6 +58,28 @@ pyinstaller --noconfirm LoLMatchQuery.spec
 
 产物输出至 `dist/LoLMatchQuery.exe`（单文件、免安装、含图标）。
 
+## 🤖 AI Agent 接入（AgentQuay）
+
+应用启动后即自动接入 [AgentQuay](https://github.com/wenbaow/agentquay)：SDK 零安装地
+拉起内嵌 Bridge，把本应用的方法暴露为标准 **MCP（Streamable HTTP）** 工具。任何支持 MCP
+的 AI Agent（zcode / opencode / codex / Claude Desktop …）指向
+`http://127.0.0.1:19846/mcp` 即可发现并调用：
+
+| MCP 工具名（`lol-match-query_xxx`） | 作用 | 危险操作 |
+|---|---|---|
+| `search_summoner` | 通过完整 Riot ID（游戏名#TAG）搜索召唤师 | 否 |
+| `query_violation_count` | 查询玩家违规记录总次数 | 否 |
+| `get_violation_types` | 查询 15 类违规类型代码对照表 | 否 |
+| `report_violation` | 举报玩家违规行为（自动批准，记录到详情面板） | **是** |
+
+- **零安装**：无需手动装 Bridge，SDK 首次连接自动拉起内嵌二进制并自动管理生命周期；
+  也可手动装系统服务让多应用长期共享（见 AgentQuay 文档）。
+- **极简接入**：直接在底层客户端（`LCUClient` / `ViolationClient`）的方法上加 `@agent_tool`
+  注解，无需额外包装层，符合 AgentQuay「加注解即暴露」的设计理念。
+- **SDK 依赖来源**：为了开源后他人可正常安装，`agentquay-sdk` 在 `requirements.txt` /
+  `pyproject.toml` 中一律声明为**从 GitHub 仓库下载**
+  （`git+https://github.com/wenbaow/agentquay.git@main#subdirectory=sdk/python`），不使用本机路径。
+
 ## 项目结构
 
 ```
@@ -64,14 +87,15 @@ LOL/
 ├── src/lol_match_query/
 │   ├── app.py               # 应用入口（PyInstaller 入口脚本）
 │   ├── __main__.py          # python -m lol_match_query 入口
-│   ├── lcu/client.py        # LCUClient：进程发现 / HTTP API / WebSocket 事件监控
+│   ├── lcu/client.py        # LCUClient：进程发现 / HTTP API / WebSocket 事件监控（@agent_tool 注解）
 │   ├── services/
-│   │   ├── violation.py     # ViolationClient：违规标记后端 API 客户端
+│   │   ├── violation.py     # ViolationClient：违规标记后端 API 客户端（@agent_tool 注解）
 │   │   └── champions.py     # ChampionDataProvider：英雄头像/名称 CDN 缓存
 │   └── gui/
 │       ├── app.py           # MatchQueryGUI 主窗口（渲染 / 监控控制）
 │       ├── player_card.py   # PlayerCardMixin：玩家卡片组件逻辑
-│       └── dialogs.py       # DialogMixin：搜索 / 举报 / 违规详情对话框
+│       ├── dialogs.py       # DialogMixin：搜索 / 举报 / 违规详情对话框
+│       └── agent_ui.py      # AgentUIMixin：AgentQuay 接入（创建 client、注册工具、后台线程）
 ├── assets/app_icon.ico      # 应用图标
 ├── scripts/build_exe.bat    # 一键打包脚本
 ├── LoLMatchQuery.spec       # PyInstaller 打包配置

@@ -7,6 +7,9 @@ binaries = []
 hiddenimports = []
 tmp_ret = collect_all('customtkinter')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# AgentQuay SDK：连同内嵌 Bridge 二进制（agentquay/bridge_bin/*）一并打包
+tmp_ret = collect_all('agentquay')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
