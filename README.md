@@ -76,9 +76,9 @@ pyinstaller --noconfirm LoLMatchQuery.spec
   也可手动装系统服务让多应用长期共享（见 AgentQuay 文档）。
 - **极简接入**：直接在底层客户端（`LCUClient` / `ViolationClient`）的方法上加 `@agent_tool`
   注解，无需额外包装层，符合 AgentQuay「加注解即暴露」的设计理念。
-- **SDK 依赖来源**：为了开源后他人可正常安装，`agentquay-sdk` 在 `requirements.txt` /
-  `pyproject.toml` 中一律声明为**从 GitHub 仓库下载**
-  （`git+https://github.com/wenbaow/agentquay.git@main#subdirectory=sdk/python`），不使用本机路径。
+- **SDK 依赖来源**：`agentquay-sdk` 已发布到 [PyPI](https://pypi.org/project/agentquay-sdk/)，
+  `requirements.txt` / `pyproject.toml` 中直接按包名声明（`agentquay-sdk>=0.3.0`），
+  开箱即可安装，无需访问 GitHub。
 
 ## 项目结构
 
