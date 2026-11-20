@@ -1,20 +1,22 @@
 """主窗口界面：英雄联盟违规标记查询工具。
 
-MatchQueryGUI 是组装根节点，持有 LCUClient / ViolationClient / ChampionDataProvider
-三个服务实例；玩家卡片与对话框逻辑分别由 PlayerCardMixin、DialogMixin 提供。
+MatchQueryGUI 是组装根节点，持有 MatchMonitorService / ViolationClient /
+ChampionDataProvider 三个服务实例；玩家卡片与对话框逻辑分别由
+PlayerCardMixin、DialogMixin 提供。
 """
-import threading
+import logging
+import sys
 from datetime import datetime
 from tkinter import messagebox
 
 import customtkinter as ctk
 
-from ..lcu.client import LCUClient
-from ..services.violation import ViolationClient
 from ..services.champions import ChampionDataProvider
-from .player_card import PlayerCardMixin
-from .dialogs import DialogMixin
+from ..services.match_monitor import MatchMonitorService
+from ..services.violation import ViolationClient
 from .agent_ui import AgentUIMixin
+from .dialogs import DialogMixin
+from .player_card import PlayerCardMixin
 
 
 class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
@@ -48,13 +50,14 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
     def __init__(self, root):
         self.root = root
 
-        self.lcu = LCUClient(
-            log_callback=self._on_log,
-            match_data_callback=self._on_match_data,
-            clear_callback=self._on_clear,
-            phase_callback=self._on_phase,
-            region_callback=self._on_account
-        )
+        self.match_service = MatchMonitorService()
+        # GUI 只通过事件订阅服务，不读取服务内部状态
+        self.match_service.subscribe('log', self._on_log)
+        self.match_service.subscribe('match_updated', self._on_match_data)
+        self.match_service.subscribe('display_cleared', self._on_clear)
+        self.match_service.subscribe('phase_changed', self._on_phase)
+        self.match_service.subscribe('account_updated', self._on_account)
+
         self.violation_client = ViolationClient(log_callback=self._on_log)
         self.champion_data = ChampionDataProvider(log_callback=self._on_log)
         self.is_running = False
@@ -165,13 +168,13 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
         )
         self.start_btn.pack(side='left', padx=(0, 10))
 
-        refresh_btn = ctk.CTkButton(
+        self.refresh_btn = ctk.CTkButton(
             btn_frame, text='刷新信息', font=('Microsoft YaHei', 13),
             width=120, height=38, corner_radius=8,
             fg_color=self.COLORS['blue'], hover_color='#0288D1',
             command=self.refresh_manual
         )
-        refresh_btn.pack(side='left')
+        self.refresh_btn.pack(side='left')
 
         # ===== 队伍区域 =====
         self.teams_frame = ctk.CTkFrame(main_frame, fg_color='transparent')
@@ -300,6 +303,8 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
     # ===== 状态指示器闪烁动画 =====
 
     def _start_blinking(self, color, text):
+        # 先取消已有动画，避免 Matchmaking -> ReadyCheck 连续切换时叠加多条 after 链
+        self._stop_blinking()
         self._blink_color = color
         self._blink_text = text
         self._blink_state = False
@@ -346,8 +351,10 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
                                       padx=(5, 0))
 
     def _on_log(self, msg):
-        """日志回调：输出到控制台（打包为exe后不可见，开发调试用）"""
-        print(f'[LOG] {msg}')
+        """日志回调：写入滚动日志文件，开发模式下同时输出到控制台"""
+        logging.getLogger('lol_match_query').info(msg)
+        if sys.stdout is not None:
+            print(f'[LOG] {msg}', flush=True)
 
     def _on_phase(self, phase):
         self.current_phase = phase
@@ -387,7 +394,7 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
         self.start_btn.configure(text='关闭工具', fg_color=self.COLORS['red'])
         self._start_blinking(self.COLORS['blue'], '正在连接...')
 
-        if not self.lcu.start():
+        if not self.match_service.start():
             self.is_running = False
             self._stop_blinking()
             self.start_btn.configure(text='启动工具', fg_color=self.COLORS['green'])
@@ -397,7 +404,7 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
     def stop_monitor(self):
         self.is_running = False
         self._stop_blinking()
-        self.lcu.stop()
+        self.match_service.stop()
         self.start_btn.configure(text='启动工具', fg_color=self.COLORS['green'])
         self.status_label.configure(text='● 已停止', text_color=self.COLORS['text_secondary'])
 
@@ -405,14 +412,22 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
         if not self.is_running:
             messagebox.showwarning('提示', '请先点击"启动工具"')
             return
-        self.lcu._check_champ_select()
-        # 手动刷新时也通过战绩接口重新获取对局信息
-        if self.lcu.game_phase in ('InProgress', 'Reconnecting', 'GameStart'):
-            self.lcu.match_history_fetched = False
-            threading.Thread(
-                target=self.lcu._fetch_match_history_puuids,
-                daemon=True
-            ).start()
+
+        self.refresh_btn.configure(state='disabled', text='刷新中')
+
+        def _done():
+            def _update():
+                self.refresh_btn.configure(state='normal', text='刷新信息')
+                self.violation_status_label.configure(text='刷新完成')
+            try:
+                self.root.after(0, _update)
+            except Exception:
+                pass
+
+        # 刷新在后台线程执行，避免阻塞 UI；重复点击会被 MatchMonitorService 拒绝
+        if not self.match_service.refresh(done_callback=_done):
+            self.refresh_btn.configure(state='normal', text='刷新信息')
+            self.violation_status_label.configure(text='刷新正在进行中，请稍候')
 
     def _on_match_data(self, data):
         self.root.after(0, lambda: self._update_match_data(data))

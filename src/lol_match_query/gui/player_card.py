@@ -6,6 +6,8 @@ import threading
 
 import customtkinter as ctk
 
+from .utils import format_violation_detail
+
 
 class PlayerCardMixin:
     """为 MatchQueryGUI 提供玩家卡片相关方法的混入类"""
@@ -110,7 +112,7 @@ class PlayerCardMixin:
         ).pack(side='left', padx=(2, 0))
 
         # 名字 + 英雄名
-        display_name = '隐藏玩家' if is_hidden else player['riot_id']
+        display_name = '隐藏玩家' if is_hidden else player.get('riot_id', '未知')
         if is_hidden:
             name_color = self.COLORS['text_secondary']
         elif violation_count > 0:
@@ -171,6 +173,20 @@ class PlayerCardMixin:
             return f'ID:{champion_id}'
         return '未选定（选人阶段不显示英雄）'
 
+    def _build_detail_lines(self, player, puuid):
+        """构建玩家详情文本行（点击卡片与违规明细刷新共用）"""
+        champion_display = self._get_champion_display(player.get('champion_id', 0))
+        team = player.get('team', '')
+        team_part = f'  |  队伍: {team}' if team else ''
+        return [
+            f'召唤师: {player.get("riot_id", "未知")}',
+            f'英雄: {champion_display}',
+            f'位置: {player.get("position", "未知")}',
+            f'技能: {player.get("spell1", "")} / {player.get("spell2", "")}',
+            f'身份: {player.get("role", "")}{team_part}',
+            f'状态: {"隐藏" if player.get("is_hidden") else "可见"}  |  PUUID: {puuid or "无"}',
+        ]
+
     def _on_card_selected(self, player, card):
         """玩家卡片被点击：高亮选中并更新详情"""
         if self._selected_card and self._selected_card.winfo_exists():
@@ -193,25 +209,15 @@ class PlayerCardMixin:
         # 自动展开详情面板，点击后立即可见选中反馈
         self._expand_detail()
 
-        champion_id = player.get('champion_id', 0)
-        champion_display = self._get_champion_display(champion_id)
-
         puuid = player.get('puuid', '')
         violation_count = self.violation_counts.get(puuid, 0) if puuid else 0
 
-        detail_lines = [
-            f'召唤师: {player["riot_id"]}',
-            f'英雄: {champion_display}',
-            f'位置: {player.get("position", "未知")}',
-            f'技能: {player.get("spell1", "")} / {player.get("spell2", "")}',
-            f'身份: {player["role"]}',
-            f'状态: {"隐藏" if player.get("is_hidden") else "可见"}  |  PUUID: {puuid or "无"}',
-        ]
+        detail_lines = self._build_detail_lines(player, puuid)
 
         # 若已有缓存的违规详情，直接显示；否则先显示总数，后台查询明细
         cached = self.violation_details.get(puuid) if puuid else None
         if cached:
-            detail_lines.append(self._format_violation_detail(cached))
+            detail_lines.append(format_violation_detail(cached))
         else:
             detail_lines.append(f'违规次数: {violation_count}')
             if puuid:
@@ -222,28 +228,6 @@ class PlayerCardMixin:
         # 后台查询违规明细（仅当未缓存时）
         if puuid and not cached:
             self._query_violation_detail(puuid, player)
-
-    def _format_violation_detail(self, detail_data):
-        """将违规详情数据格式化为显示文本"""
-        # 兼容 int 格式（API 返回的 data 直接是总次数）
-        if isinstance(detail_data, int):
-            total = detail_data
-            if total == 0:
-                return '违规次数: 0 (无违规记录)'
-            return f'违规次数: {total}'
-
-        total = detail_data.get('totalCount', 0)
-        type_counts = detail_data.get('typeCounts', [])
-        if total == 0:
-            return '违规次数: 0 (无违规记录)'
-
-        # 只显示次数 > 0 的类型
-        active_types = [t for t in type_counts if t.get('count', 0) > 0]
-        lines = [f'违规次数: {total}']
-        if active_types:
-            type_str = '  '.join(f'{t["typeName"]}: {t["count"]}次' for t in active_types)
-            lines.append(f'  明细: {type_str}')
-        return '\n'.join(lines)
 
     def _query_violation_detail(self, puuid, player):
         """后台查询单个玩家违规明细 GET /lol/violation/count"""
@@ -268,18 +252,8 @@ class PlayerCardMixin:
                     # 仅当选中的玩家仍是同一人时才更新详情面板
                     current = self.selected_player
                     if current and current.get('puuid') == puuid:
-                        champion_id = current.get('champion_id', 0)
-                        champion_display = self._get_champion_display(champion_id)
-
-                        detail_lines = [
-                            f'召唤师: {current["riot_id"]}',
-                            f'英雄: {champion_display}',
-                            f'位置: {current.get("position", "未知")}',
-                            f'技能: {current.get("spell1", "")} / {current.get("spell2", "")}',
-                            f'身份: {current["role"]}  |  队伍: {current["team"]}',
-                            f'状态: {"隐藏" if current.get("is_hidden") else "可见"}  |  PUUID: {puuid}',
-                            self._format_violation_detail(data),
-                        ]
+                        detail_lines = self._build_detail_lines(current, puuid)
+                        detail_lines.append(format_violation_detail(data))
                         self._set_detail_text('\n'.join(detail_lines))
                 else:
                     # 查询失败，更新提示
@@ -292,10 +266,3 @@ class PlayerCardMixin:
             self.root.after(0, _update)
 
         threading.Thread(target=_query, daemon=True).start()
-
-    def _get_violation_tag(self, puuid):
-        """根据缓存的违规次数生成标注文本"""
-        count = self.violation_counts.get(puuid)
-        if count and count > 0:
-            return f'  [违规{count}次]'
-        return ''

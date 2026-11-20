@@ -8,7 +8,7 @@ echo   LoLMatchQuery - EXE Build
 echo ==========================================
 
 echo [1/2] Installing dependencies...
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 if errorlevel 1 (
     echo Failed to install dependencies, please check your network.
     pause

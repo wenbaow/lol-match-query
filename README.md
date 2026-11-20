@@ -6,7 +6,7 @@
 > - 本工具仅**读取**英雄联盟客户端的本地接口数据，**不操作游戏、不注入、不修改任何数据**，仅供学习交流使用。
 > - 本项目与 Riot Games 及腾讯游戏无关，为第三方非官方工具。
 > - 违规标记服务为作者自建后端（`https://ffmy.top/api`），使用即视为同意将举报数据提交至该服务。
-> - 版权归作者所有，未经授权请勿用于商业用途。
+> - 本项目基于 Apache License 2.0 开源：可自由使用、修改和分发（包括商业用途），请保留版权与许可声明。
 
 ## 功能特性
 
@@ -52,7 +52,7 @@ lol-match-query
 scripts\build_exe.bat
 
 # 方式二：手动执行
-pip install pyinstaller
+pip install -r requirements-dev.txt
 pyinstaller --noconfirm LoLMatchQuery.spec
 ```
 
@@ -70,11 +70,11 @@ pyinstaller --noconfirm LoLMatchQuery.spec
 | `search_summoner` | 通过完整 Riot ID（游戏名#TAG）搜索召唤师 | 否 |
 | `query_violation_count` | 查询玩家违规记录总次数 | 否 |
 | `get_violation_types` | 查询 15 类违规类型代码对照表 | 否 |
-| `report_violation` | 举报玩家违规行为（自动批准，记录到详情面板） | **是** |
+| `report_violation` | 举报玩家违规行为（需用户在确认弹窗中批准） | **是** |
 
 - **零安装**：无需手动装 Bridge，SDK 首次连接自动拉起内嵌二进制并自动管理生命周期；
   也可手动装系统服务让多应用长期共享（见 AgentQuay 文档）。
-- **极简接入**：直接在底层客户端（`LCUClient` / `ViolationClient`）的方法上加 `@agent_tool`
+- **极简接入**：直接在 `MatchMonitorService` / `ViolationClient` 的方法上加 `@agent_tool`
   注解，无需额外包装层，符合 AgentQuay「加注解即暴露」的设计理念。
 - **SDK 依赖来源**：`agentquay-sdk` 已发布到 [PyPI](https://pypi.org/project/agentquay-sdk/)，
   `requirements.txt` / `pyproject.toml` 中直接按包名声明（`agentquay-sdk>=0.3.0`），
@@ -83,27 +83,41 @@ pyinstaller --noconfirm LoLMatchQuery.spec
 ## 项目结构
 
 ```
-LOL/
+lol-match-query/
 ├── src/lol_match_query/
-│   ├── app.py               # 应用入口（PyInstaller 入口脚本）
+│   ├── app.py               # 应用入口（PyInstaller 入口脚本 / 图标解析）
 │   ├── __main__.py          # python -m lol_match_query 入口
-│   ├── lcu/client.py        # LCUClient：进程发现 / HTTP API / WebSocket 事件监控（@agent_tool 注解）
+│   ├── logging_utils.py     # 滚动日志配置（~/.lol_helper/logs/app.log）
+│   ├── lcu/
+│   │   ├── client.py        # LCUClient：传输层（进程发现 / HTTP / WebSocket / 原始事件）
+│   │   ├── connection.py    # LCU 进程发现与 WebSocket 客户端构造
+│   │   ├── events.py        # 传输层与 service 层共享的事件/URI 常量
+│   │   ├── parser.py        # 对局数据解析纯函数（选人 / gameflow / 战绩）
+│   │   └── regions.py       # 大区 / platformId 映射
 │   ├── services/
+│   │   ├── match_monitor.py # MatchMonitorService：阶段状态机 / 缓存 / 事件源
 │   │   ├── violation.py     # ViolationClient：违规标记后端 API 客户端（@agent_tool 注解）
 │   │   └── champions.py     # ChampionDataProvider：英雄头像/名称 CDN 缓存
-│   └── gui/
-│       ├── app.py           # MatchQueryGUI 主窗口（渲染 / 监控控制）
-│       ├── player_card.py   # PlayerCardMixin：玩家卡片组件逻辑
-│       ├── dialogs.py       # DialogMixin：搜索 / 举报 / 违规详情对话框
-│       └── agent_ui.py      # AgentUIMixin：AgentQuay 接入（创建 client、注册工具、后台线程）
-├── assets/app_icon.ico      # 应用图标
+│   ├── gui/
+│   │   ├── app.py           # MatchQueryGUI 主窗口（渲染 / 监控控制）
+│   │   ├── player_card.py   # PlayerCardMixin：玩家卡片组件逻辑
+│   │   ├── dialogs.py       # DialogMixin：搜索 / 举报 / 违规详情对话框
+│   │   ├── utils.py         # GUI 通用纯函数（安全数值转换、违规详情格式化）
+│   │   └── agent_ui.py      # AgentUIMixin：AgentQuay 接入（确认弹窗 / 生命周期管理）
+│   └── assets/app_icon.ico  # 应用图标（随包安装）
+├── tests/                   # pytest 单元测试（解析 / 大区 / 工具函数 / 监控服务）
 ├── scripts/build_exe.bat    # 一键打包脚本
 ├── LoLMatchQuery.spec       # PyInstaller 打包配置
-├── pyproject.toml           # 项目元数据与依赖声明
-└── requirements.txt         # 依赖清单
+├── pyproject.toml           # 项目元数据、依赖与 pytest/ruff 配置
+├── requirements.txt         # 运行时依赖
+└── requirements-dev.txt     # 开发 / 测试 / 打包依赖
 ```
 
 ## 工作原理
+
+GUI 与 Agent 均通过 `MatchMonitorService` 访问对局状态：service 持有阶段状态机与缓存，发布
+`phase_changed` / `match_updated` / `display_cleared` / `account_updated` 事件；`LCUClient`
+只负责进程发现、HTTP 与 WebSocket 传输，不再直接暴露给 UI/Agent。
 
 工具通过扫描 `LeagueClientUx.exe` 进程命令行参数获取本地接口的端口与 token，然后：
 
@@ -124,8 +138,21 @@ A: 请确认已完整启动英雄联盟客户端并登录进入大厅（`LeagueC
 A: 读条 / 加载阶段 gameData 可能尚未就绪，工具会自动轮询（最多 90 秒）；也可点击「刷新信息」手动触发。
 
 **Q: 英雄头像不显示？**
-A: 首次使用需从 Data Dragon CDN 下载头像，网络受限时可能失败；已下载的头像会缓存到 `~/.lol_helper/icons/`。
+A: 首次使用需从 Data Dragon CDN 下载头像，网络受限时可能失败；已下载的头像会缓存到 `~/.lol_helper/icons/`，损坏的缓存会自动删除并重新下载。
+
+**Q: 出问题时日志在哪里？**
+A: 日志写入 `~/.lol_helper/logs/app.log`（滚动保留 3 份）。需要更详细的调试日志时，设置环境变量 `LOLMQ_DEBUG=1` 后启动。
+
+## 开发与测试
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+ruff check src tests
+```
+
+解析层（`lcu/parser.py`）、大区映射和 GUI 纯函数均有单元测试，运行时不需要启动英雄联盟客户端。
 
 ## 许可证
 
-本项目基于 [Apache License 2.0](LICENSE) 开源。
+本项目基于 [Apache License 2.0](LICENSE) 开源，允许商业使用；Copyright 2026 王文豹。

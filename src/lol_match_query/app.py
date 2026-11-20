@@ -9,8 +9,9 @@ from pathlib import Path
 
 import customtkinter as ctk
 
-from lol_match_query import __app_title__
+from lol_match_query import __app_title__, __version__
 from lol_match_query.gui.app import MatchQueryGUI
+from lol_match_query.logging_utils import get_logger, setup_logging
 
 
 def _resolve_icon_path():
@@ -18,16 +19,16 @@ def _resolve_icon_path():
 
     兼容两种运行方式：
     - PyInstaller 打包后：图标被打入 sys._MEIPASS 根目录
-    - 源码运行：图标位于项目根目录的 assets/ 下
+    - 源码运行 / pip 安装后：图标位于包内 assets/ 下
     """
     if getattr(sys, 'frozen', False):
         return os.path.join(sys._MEIPASS, 'app_icon.ico')
-    # src/lol_match_query/app.py -> 项目根目录
-    project_root = Path(__file__).resolve().parent.parent.parent
-    return str(project_root / 'assets' / 'app_icon.ico')
+    return str(Path(__file__).resolve().parent / 'assets' / 'app_icon.ico')
 
 
 def main():
+    setup_logging()
+    get_logger().info('=== %s v%s 启动 ===', __app_title__, __version__)
     ctk.set_appearance_mode('dark')
     ctk.set_default_color_theme('dark-blue')
     root = ctk.CTk()
@@ -45,9 +46,10 @@ def main():
 def _on_close(root, app):
     """关闭窗口：先优雅断开 Agent 客户端，再销毁主窗口。"""
     try:
-        app.agent_service.close()
+        app.stop_agent_service()
     except Exception:
-        pass
+        get_logger().exception('关闭 Agent 服务失败')
+    get_logger().info('=== 应用退出 ===')
     root.destroy()
 
 

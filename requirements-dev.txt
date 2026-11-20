@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# 开发 / 测试 / 打包工具
+pytest>=7.0
+ruff>=0.5
+pyinstaller>=5.0

@@ -2,7 +2,7 @@
 # PyInstaller 打包配置：pyinstaller --noconfirm LoLMatchQuery.spec
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('assets/app_icon.ico', '.')]
+datas = [('src/lol_match_query/assets/app_icon.ico', '.')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('customtkinter')
@@ -10,6 +10,11 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # AgentQuay SDK：连同内嵌 Bridge 二进制（agentquay/bridge_bin/*）一并打包
 tmp_ret = collect_all('agentquay')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# MatchMonitorService 在运行时延迟创建传输层，显式告知 PyInstaller
+hiddenimports += [
+    'lol_match_query.lcu.client',
+    'lol_match_query.lcu.connection',
+]
 
 
 a = Analysis(
@@ -46,5 +51,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['assets/app_icon.ico'],
+    icon=['src/lol_match_query/assets/app_icon.ico'],
 )

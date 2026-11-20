@@ -8,6 +8,7 @@ from tkinter import messagebox
 import customtkinter as ctk
 
 from ..services.violation import ViolationClient
+from .utils import safe_int
 
 
 class DialogMixin:
@@ -40,7 +41,7 @@ class DialogMixin:
         self.search_entry.configure(state='disabled')
 
         def _do_search():
-            result = self.lcu.search_summoner(query)
+            result = self.match_service.search_summoner(query)
 
             def _update():
                 self.search_btn.configure(state='normal', text='搜索')
@@ -90,9 +91,11 @@ class DialogMixin:
         # Riot ID 格式：游戏名#标签
         riot_id = f'{game_name}#{tag_line}' if game_name and tag_line else game_name or '未知'
 
-        # 大区信息
+        # 大区信息（优先使用 region-locale 解析出的中文大区名，其次回退到 platformId）
         platform_id = self.account_info.get('platform_id', '')
-        platform_name = self.account_info.get('platform_name', '') or platform_id or '未知'
+        platform_name = (self.account_info.get('region_name')
+                         or self.account_info.get('platform_name')
+                         or platform_id or '未知')
 
         rows = [
             ('Riot ID', riot_id),
@@ -182,15 +185,18 @@ class DialogMixin:
 
             def _update():
                 loading_label.destroy()
-                if result.get('code') == 200 and result.get('data'):
+                # 注意：data 可能为 0（0 次违规），不能用真值判断
+                if result.get('code') == 200 and result.get('data') is not None:
                     data = result['data']
                     # 调试：打印返回的数据结构
                     self._on_log(f'违规查询返回数据: {data}')
 
-                    # 兼容不同格式：data 可能是 dict 或 int
+                    # 兼容不同格式：data 可能是 dict、int 或 0
                     if isinstance(data, dict):
-                        total = data.get('totalCount', 0)
-                        type_counts = data.get('typeCounts', [])
+                        total = safe_int(data.get('totalCount'))
+                        type_counts = data.get('typeCounts') or []
+                        if not isinstance(type_counts, list):
+                            type_counts = []
                     elif isinstance(data, int):
                         # data 直接是总次数
                         total = data
@@ -215,8 +221,10 @@ class DialogMixin:
                     scroll.pack(fill='both', expand=True, padx=10, pady=10)
 
                     for i, tc in enumerate(type_counts):
+                        if not isinstance(tc, dict):
+                            continue
                         tc_type = tc.get('typeName', '未知')
-                        tc_count = tc.get('count', 0)
+                        tc_count = safe_int(tc.get('count'))
                         row = i // 2
                         col = i % 2
                         count_color = self.COLORS['red'] if tc_count > 0 else self.COLORS['text_secondary']
@@ -254,7 +262,7 @@ class DialogMixin:
             messagebox.showwarning('提示', '请先在队伍列表中选择一名玩家')
             return
         # 不能标记自己：通过角色和puuid双重判断
-        if self.selected_player['role'] == '自己':
+        if self.selected_player.get('role') == '自己':
             messagebox.showwarning('提示', '不能对自己发起违规标记')
             return
         my_puuid = self.account_info.get('puuid', '')
@@ -279,7 +287,7 @@ class DialogMixin:
 
         ctk.CTkLabel(
             dialog,
-            text=f'请选择对玩家 [{player["riot_id"]}] 的违规类型：',
+            text=f'请选择对玩家 [{player.get("riot_id", "未知")}] 的违规类型：',
             font=('Microsoft YaHei', 13), text_color=self.COLORS['text_primary'],
             wraplength=380, justify='left'
         ).pack(pady=(15, 10), padx=15)
@@ -343,7 +351,7 @@ class DialogMixin:
     def _do_report_violation(self, player, violation_type):
         """在后台线程中执行违规举报"""
         def _report():
-            game_id = self.lcu.get_current_game_id()
+            game_id = self.match_service.get_current_game_id()
             reporter_puuid = self.account_info.get('puuid', '')
             platform_id = self.account_info.get('platform_id', '')
             platform_name = self.account_info.get('region_name', '')
@@ -375,7 +383,7 @@ class DialogMixin:
             violation_name = ViolationClient.VIOLATION_TYPES.get(violation_type, '未知')
             self.root.after(0, lambda: self.violation_status_label.configure(
                 text=f'正在提交违规标记({violation_name})...'))
-            self._on_log(f'正在举报 {player["riot_id"]} 违规类型: {violation_name}')
+            self._on_log(f'正在举报 {player.get("riot_id", "未知")} 违规类型: {violation_name}')
 
             result = self.violation_client.report_violation(
                 reporter_puuid, platform_id, platform_name,
@@ -387,10 +395,10 @@ class DialogMixin:
                 msg = result.get('message', '')
                 if code == 200:
                     self.violation_status_label.configure(
-                        text=f'已标记 {player["riot_id"]} - {violation_name}')
+                        text=f'已标记 {player.get("riot_id", "未知")} - {violation_name}')
                     messagebox.showinfo(
                         '成功',
-                        f'已成功标记 {player["riot_id"]} 的违规行为：{violation_name}')
+                        f'已成功标记 {player.get("riot_id", "未知")} 的违规行为：{violation_name}')
                 else:
                     self.violation_status_label.configure(text=f'标记失败: {msg}')
                     messagebox.showerror('标记失败', msg)
@@ -434,12 +442,26 @@ class DialogMixin:
             def _update():
                 code = result.get('code')
                 if code == 200:
-                    data = result.get('data', [])
+                    # 后端可能返回 "data": null，统一按空列表处理；非列表则视为异常
+                    data = result.get('data')
+                    if data is None:
+                        data = []
+                    if not isinstance(data, list):
+                        msg = '查询结果格式异常'
+                        self.violation_status_label.configure(text=f'查询失败: {msg}')
+                        self._on_log(f'批量查询返回非列表数据: {type(data).__name__}')
+                        messagebox.showerror('查询失败', msg)
+                        return
+
                     self.violation_counts = {}
                     flagged_count = 0
                     for item in data:
+                        if not isinstance(item, dict):
+                            continue
                         puuid = item.get('puuid', '')
-                        count = item.get('violationCount', 0)
+                        if not puuid:
+                            continue
+                        count = safe_int(item.get('violationCount'))
                         self.violation_counts[puuid] = count
                         if count > 0:
                             flagged_count += 1

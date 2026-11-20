@@ -2,12 +2,13 @@
 
 从 Data Dragon CDN 获取英雄头像与中文名，支持本地磁盘缓存与后台预加载。
 """
-import os
 import io
+import os
+import tempfile
 import threading
 
-import requests
 import customtkinter as ctk
+import requests
 from PIL import Image
 
 
@@ -41,20 +42,25 @@ class ChampionDataProvider:
         def _init():
             try:
                 resp = requests.get(self.VERSIONS_URL, timeout=10)
-                self.version = resp.json()[0]
-                self._log(f'Data Dragon 版本: {self.version}')
+                resp.raise_for_status()
+                version = resp.json()[0]
+                self._log(f'Data Dragon 版本: {version}')
 
-                url = f'{self.CDN_BASE}/{self.version}/data/zh_CN/champion.json'
+                url = f'{self.CDN_BASE}/{version}/data/zh_CN/champion.json'
                 resp = requests.get(url, timeout=10)
-                for en_name, info in resp.json()['data'].items():
-                    self.champion_map[info['key']] = {
+                resp.raise_for_status()
+                champion_map = {}
+                for en_name, info in resp.json().get('data', {}).items():
+                    champion_map[info['key']] = {
                         'en_name': en_name,
                         'cn_name': info['name'],
                     }
 
                 with self._lock:
+                    self.version = version
+                    self.champion_map = champion_map
                     self._initialized = True
-                self._log(f'已加载 {len(self.champion_map)} 个英雄数据')
+                self._log(f'已加载 {len(champion_map)} 个英雄数据')
                 if done_callback:
                     done_callback()
             except Exception as e:
@@ -64,8 +70,45 @@ class ChampionDataProvider:
 
     def get_champion_name(self, champion_id):
         """获取英雄中文名"""
-        info = self.champion_map.get(str(champion_id))
+        with self._lock:
+            info = self.champion_map.get(str(champion_id))
         return info['cn_name'] if info else None
+
+    def _cache_path(self, en_name):
+        return os.path.join(self.cache_dir, f'{en_name}_64.png')
+
+    def _remove_cache_file(self, cache_path):
+        """删除损坏的缓存文件，让下次预加载重新下载"""
+        try:
+            os.remove(cache_path)
+            self._log(f'已删除损坏的头像缓存: {cache_path}')
+        except OSError:
+            pass
+
+    def _download_icon(self, session, info):
+        """下载单个头像并以原子方式写入缓存"""
+        cache_path = self._cache_path(info['en_name'])
+        url = f'{self.CDN_BASE}/{self.version}/img/champion/{info["en_name"]}.png'
+        resp = session.get(url, timeout=10)
+        resp.raise_for_status()
+
+        with Image.open(io.BytesIO(resp.content)) as img:
+            img.load()
+            pil_img = img.copy()
+
+        # 先写临时文件再 os.replace，避免中断产生半截 PNG
+        fd, tmp_path = tempfile.mkstemp(
+            prefix='champion_', suffix='.png', dir=self.cache_dir)
+        os.close(fd)
+        try:
+            pil_img.save(tmp_path, format='PNG')
+            os.replace(tmp_path, cache_path)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
     def preload_icons_async(self, champion_ids, done_callback=None):
         """后台批量下载英雄头像文件到本地缓存"""
@@ -74,27 +117,32 @@ class ChampionDataProvider:
 
         def _download():
             downloaded = False
-            for cid in champion_ids:
-                if cid in self._preloading:
-                    continue
-                info = self.champion_map.get(str(cid))
-                if not info:
-                    continue
-                cache_path = os.path.join(self.cache_dir, f'{info["en_name"]}_64.png')
-                if os.path.exists(cache_path):
-                    continue
-                self._preloading.add(cid)
-                try:
-                    url = f'{self.CDN_BASE}/{self.version}/img/champion/{info["en_name"]}.png'
-                    resp = requests.get(url, timeout=10)
-                    Image.open(io.BytesIO(resp.content)).save(cache_path)
-                    downloaded = True
-                except Exception as e:
-                    self._log(f'下载英雄头像失败({info["en_name"]}): {e}')
-                finally:
-                    self._preloading.discard(cid)
+            session = requests.Session()
+            try:
+                for cid in champion_ids:
+                    with self._lock:
+                        info = self.champion_map.get(str(cid))
+                        if not info or cid in self._preloading:
+                            continue
+                        self._preloading.add(cid)
+                    try:
+                        cache_path = self._cache_path(info['en_name'])
+                        if not os.path.exists(cache_path):
+                            self._download_icon(session, info)
+                            downloaded = True
+                    except Exception as e:
+                        self._log(f'下载英雄头像失败({info["en_name"]}): {e}')
+                    finally:
+                        with self._lock:
+                            self._preloading.discard(cid)
+            finally:
+                session.close()
+
             if downloaded and done_callback:
-                done_callback()
+                try:
+                    done_callback()
+                except Exception as e:
+                    self._log(f'头像下载完成回调异常: {e}')
 
         threading.Thread(target=_download, daemon=True).start()
 
@@ -104,18 +152,31 @@ class ChampionDataProvider:
         if key in self.icon_cache:
             return self.icon_cache[key]
 
-        info = self.champion_map.get(str(champion_id))
+        with self._lock:
+            info = self.champion_map.get(str(champion_id))
         if not info:
             return None
 
-        cache_path = os.path.join(self.cache_dir, f'{info["en_name"]}_64.png')
+        cache_path = self._cache_path(info['en_name'])
         if not os.path.exists(cache_path):
             return None
 
+        # 先校验图片本身；损坏则删除缓存，等下次预加载重新下载
         try:
-            img = Image.open(cache_path)
-            ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(size, size))
-            self.icon_cache[key] = ctk_img
-            return ctk_img
-        except Exception:
+            with Image.open(cache_path) as img:
+                img.load()
+                pil_img = img.copy()
+        except Exception as e:
+            self._log(f'头像缓存无效，将重新下载({info["en_name"]}): {e}')
+            self._remove_cache_file(cache_path)
             return None
+
+        try:
+            ctk_img = ctk.CTkImage(
+                light_image=pil_img, dark_image=pil_img, size=(size, size))
+        except Exception as e:
+            self._log(f'创建头像图像失败({info["en_name"]}): {e}')
+            return None
+
+        self.icon_cache[key] = ctk_img
+        return ctk_img

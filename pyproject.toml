@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,11 +8,17 @@ version = "1.0.0"
 description = "英雄联盟违规标记查询工具（基于 LCU 本地接口）"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "All rights reserved" }
-authors = [{ name = "LoLMatchQuery Contributors" }]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "王文豹" }]
 keywords = ["lol", "league-of-legends", "lcu", "customtkinter"]
 classifiers = [
+    "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Operating System :: Microsoft :: Windows",
     "Topic :: Games/Entertainment",
 ]
@@ -27,8 +33,34 @@ dependencies = [
     "agentquay-sdk>=0.3.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.5",
+    "pyinstaller>=5.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/wenbaow/lol-match-query"
+Repository = "https://github.com/wenbaow/lol-match-query"
+Issues = "https://github.com/wenbaow/lol-match-query/issues"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+lol_match_query = ["assets/*.ico"]
+
 [project.gui-scripts]
 lol-match-query = "lol_match_query.app:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]

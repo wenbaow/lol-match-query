@@ -5,6 +5,11 @@ __pycache__/
 .eggs/
 build/
 dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 
 # ===== PyInstaller =====
 *.manifest
