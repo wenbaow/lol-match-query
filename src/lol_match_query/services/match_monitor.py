@@ -28,7 +28,6 @@ from ..lcu.parser import (
     build_match_data_from_history,
     collect_puuid_cache,
     parse_champ_select,
-    strip_champion_info,
 )
 from ..lcu.regions import get_region_name
 
@@ -384,7 +383,8 @@ class MatchMonitorService:
             'stage': 'champ_select'
         }
         self._cached_bp_match_data = match_data
-        self._send_match(strip_champion_info(match_data))
+        # 选人阶段保留 champion_id，GUI 会在原卡片上就地更新头像/英雄名，避免重建闪烁
+        self._send_match(match_data)
         # session Update 事件很频繁，这里做5秒节流，避免每个事件都请求一次LCU
         if not self._cached_game_id and time.time() - self._game_id_fetch_ts >= 5.0:
             self._game_id_fetch_ts = time.time()

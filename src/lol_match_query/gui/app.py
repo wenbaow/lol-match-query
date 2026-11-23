@@ -72,6 +72,8 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
         self._detail_expanded = False
         self._blink_job = None
         self._teams_stacked = False
+        self._icon_preload_job = None
+        self._icon_preload_pending = []
 
         self._build_ui()
         # 后台初始化英雄数据，完成后若有缓存对局则刷新卡片以显示头像
@@ -475,7 +477,7 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
             self._render_full(match_data)
 
     def _update_champ_select_partial(self, match_data):
-        """BP阶段增量更新：英雄变更时仅重建对应卡片，避免整队闪烁"""
+        """BP阶段增量更新：英雄变化时就地更新卡片，避免整队闪烁"""
         # 首次进入BP，完整渲染
         if not self._match_data_cache:
             self._render_full(match_data)
@@ -494,8 +496,16 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
         new_enemy_team = match_data.get('enemy_team', [])
         old_enemy_team = cache.get('enemy_team', [])
 
-        # 成员数量发生变化：位置会错位，整队重建
-        if len(old_my_team) != len(new_my_team) or len(old_enemy_team) != len(new_enemy_team):
+        old_my_order = [p.get('cell_id') for p in old_my_team]
+        new_my_order = [p.get('cell_id') for p in new_my_team]
+        old_enemy_order = [p.get('cell_id') for p in old_enemy_team]
+        new_enemy_order = [p.get('cell_id') for p in new_enemy_team]
+
+        # 成员数量或顺序变化：位置会错位，整队重建
+        if (len(old_my_team) != len(new_my_team)
+                or len(old_enemy_team) != len(new_enemy_team)
+                or old_my_order != new_my_order
+                or old_enemy_order != new_enemy_order):
             self._render_full(match_data)
             return
 
@@ -505,75 +515,63 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
             self._render_full(match_data)
             return
 
-        my_changed, my_rebuilt_selected = self._rebuild_changed_cards(
+        my_changed, my_selected = self._update_changed_cards(
             self.my_team_list, old_my_team, new_my_team)
-        enemy_changed, enemy_rebuilt_selected = self._rebuild_changed_cards(
+        enemy_changed, enemy_selected = self._update_changed_cards(
             self.enemy_team_list, old_enemy_team, new_enemy_team)
 
         if not my_changed and not enemy_changed:
-            # 数据无变化：只就地更新已下载完成的头像占位符
-            self._refresh_team_icons(self.my_team_list)
-            self._refresh_team_icons(self.enemy_team_list)
+            # 数据无变化：就地刷新头像/英雄名（例如头像刚下载完成）
+            self._refresh_team_cards(self.my_team_list)
+            self._refresh_team_cards(self.enemy_team_list)
+            self._preload_missing_icons(new_my_team + new_enemy_team)
             return
 
         self._match_data_cache = match_data
 
-        # 若之前选中的卡片被重建，恢复选中高亮并刷新详情
-        rebuilt_selected = my_rebuilt_selected or enemy_rebuilt_selected
-        if rebuilt_selected:
-            self._on_card_selected(*rebuilt_selected)
+        # 选中卡片的数据也可能变化，刷新详情
+        updated_selected = my_selected or enemy_selected
+        if updated_selected:
+            self._on_card_selected(*updated_selected)
 
         # 预下载新出现但尚未缓存的英雄头像（下载完成后就地更新，不闪烁）
+        self._preload_missing_icons(new_my_team + new_enemy_team)
+
+    def _preload_missing_icons(self, players):
+        """预下载当前卡片上尚未缓存的英雄头像，完成后就地刷新"""
         missing = []
         seen = set()
-        for player in new_my_team + new_enemy_team:
+        for player in players:
             cid = player.get('champion_id', 0)
             if cid and cid not in seen and not self.champion_data.get_champion_icon(cid, size=36):
                 missing.append(cid)
                 seen.add(cid)
-        if missing:
-            self.champion_data.preload_icons_async(
-                missing, lambda: self.root.after(0, self._refresh_cards_if_needed))
+        if not missing:
+            return
 
-    def _refresh_team_icons(self, team_frame):
-        """头像下载完成后就地替换占位符（不重建卡片，避免闪烁）"""
-        for card in team_frame.pack_slaves():
-            placeholder = getattr(card, '_placeholder_label', None)
-            if placeholder is None:
-                continue
-            champion_id = getattr(card, '_champion_id', 0)
-            icon = self.champion_data.get_champion_icon(champion_id, size=36)
-            if not icon:
-                continue
-            content = placeholder.master
-            new_icon = ctk.CTkLabel(content, image=icon, text='', width=40)
-            new_icon.pack(side='left', padx=(0, 6), before=placeholder)
-            placeholder.destroy()
-            card._icon_label = new_icon
-            card._placeholder_label = None
+        # 同一批缺失头像已经排过队：不要因为频繁的 session Update 反复重置定时器
+        if missing == self._icon_preload_pending:
+            return
 
-    def _rebuild_changed_cards(self, team_frame, old_team, new_team):
-        """仅重建内容发生变化的玩家卡片，返回(是否有变化, 重建的选中卡片信息)"""
-        any_changed = False
-        rebuilt_selected = None
-        cards = team_frame.pack_slaves()
-        for idx, (old_p, new_p) in enumerate(zip(old_team, new_team)):
-            if old_p == new_p:
-                continue
-            any_changed = True
-            if idx >= len(cards):
-                continue
-            old_card = cards[idx]
-            was_selected = old_card is self._selected_card
-            next_sibling = cards[idx + 1] if idx + 1 < len(cards) else None
-            old_card.destroy()
-            new_card = self._create_player_card(
-                team_frame, new_p, idx + 1, before=next_sibling)
-            if was_selected:
-                rebuilt_selected = (new_p, new_card)
-            # 卡片被替换后，按 pack 顺序重新获取列表
-            cards = team_frame.pack_slaves()
-        return any_changed, rebuilt_selected
+        # 合并短时间内的多次英雄悬停/切换，避免频繁起下载线程
+        if self._icon_preload_job:
+            try:
+                self.root.after_cancel(self._icon_preload_job)
+            except Exception:
+                pass
+        self._icon_preload_pending = list(missing)
+        self._icon_preload_job = self.root.after(
+            200, lambda: self._start_icon_preload(missing))
+
+    def _start_icon_preload(self, champion_ids):
+        self._icon_preload_job = None
+        if not self.champion_data.initialized:
+            # 英雄数据尚未就绪，清空 pending，等初始化完成后再触发一次
+            self._icon_preload_pending = []
+            return
+        self.champion_data.preload_icons_async(
+            champion_ids,
+            lambda: self.root.after(0, self._refresh_cards_if_needed))
 
     def _render_full(self, match_data):
         """完整渲染对局数据（不区分阶段，用于首次初始化或数据源切换时）"""
@@ -623,13 +621,7 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
         self._match_data_cache = match_data
 
         # 后台预下载英雄头像，完成后刷新卡片显示头像
-        all_players = my_team + enemy_team
-        champion_ids = list({p.get('champion_id', 0) for p in all_players if p.get('champion_id')})
-        if champion_ids:
-            self.champion_data.preload_icons_async(
-                champion_ids,
-                done_callback=lambda: self.root.after(0, self._refresh_cards_if_needed)
-            )
+        self._preload_missing_icons(my_team + enemy_team)
 
     def _refresh_cards_if_needed(self):
         """英雄数据/头像就绪后刷新当前对局卡片"""

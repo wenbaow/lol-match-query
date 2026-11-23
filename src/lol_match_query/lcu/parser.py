@@ -37,35 +37,6 @@ def get_position_name(position):
     return POSITION_NAMES.get(position, position)
 
 
-def strip_champion_info(match_data):
-    """复制对局数据并清空英雄信息（选人阶段专用）
-
-    选人阶段玩家频繁更换英雄，若把 champion_id 发给UI，
-    卡片比较会被触发重建导致界面闪烁；进入游戏后由
-    cached_bp_match_data（完整数据）或 gameflow 数据补齐英雄。
-    """
-    stripped = {
-        'my_team': [],
-        'enemy_team': [],
-        'myself': None,
-        'stage': match_data.get('stage', 'champ_select'),
-    }
-    for player in match_data.get('my_team') or []:
-        item = dict(player)
-        item['champion_id'] = 0
-        stripped['my_team'].append(item)
-    for player in match_data.get('enemy_team') or []:
-        item = dict(player)
-        item['champion_id'] = 0
-        stripped['enemy_team'].append(item)
-    myself = match_data.get('myself')
-    if myself:
-        item = dict(myself)
-        item['champion_id'] = 0
-        stripped['myself'] = item
-    return stripped
-
-
 def parse_champ_select(my_team_data, enemy_team_data, local_player_cell_id=0,
                        current_summoner_puuid=None, current_summoner_name=None):
     """解析英雄选择阶段的完整队伍数据"""

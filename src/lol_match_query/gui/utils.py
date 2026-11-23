@@ -9,6 +9,18 @@ def safe_int(value, default=0):
         return default
 
 
+def only_champion_changed(old_player, new_player):
+    """判断两个玩家卡片数据是否只有 champion_id 不同（用于 BP 原位更新）"""
+    if not isinstance(old_player, dict) or not isinstance(new_player, dict):
+        return False
+    keys = set(old_player) | set(new_player)
+    return all(
+        old_player.get(key) == new_player.get(key)
+        for key in keys
+        if key != 'champion_id'
+    )
+
+
 def format_violation_detail(detail_data):
     """将违规详情数据格式化为显示文本，兼容 int / dict / 脏数据"""
     # 兼容 int 格式（API 返回的 data 直接是总次数）

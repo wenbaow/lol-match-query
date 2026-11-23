@@ -7,7 +7,6 @@ from lol_match_query.lcu.parser import (
     get_spell_name,
     group_players_by_side,
     parse_champ_select,
-    strip_champion_info,
 )
 
 
@@ -65,24 +64,6 @@ def test_collect_puuid_cache_uses_name_and_riot_id():
     assert cache['自己#0001'] == 'p1'
     assert cache['队友#0002'] == 'p2'
     assert '无puuid' not in cache
-
-
-def test_strip_champion_info_copies_without_touching_original():
-    match_data = {
-        'my_team': [{'riot_id': 'A#1', 'champion_id': 103}],
-        'enemy_team': [{'riot_id': 'B#2', 'champion_id': 64}],
-        'myself': {'riot_id': 'A#1', 'champion_id': 103},
-        'stage': 'champ_select',
-    }
-
-    stripped = strip_champion_info(match_data)
-
-    assert stripped['my_team'][0]['champion_id'] == 0
-    assert stripped['enemy_team'][0]['champion_id'] == 0
-    assert stripped['myself']['champion_id'] == 0
-    assert stripped['stage'] == 'champ_select'
-    # 原数据不受影响
-    assert match_data['my_team'][0]['champion_id'] == 103
 
 
 def test_group_players_by_side_uses_self_puuid_then_bp_fallback():

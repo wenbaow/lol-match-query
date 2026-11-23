@@ -6,7 +6,7 @@ import threading
 
 import customtkinter as ctk
 
-from .utils import format_violation_detail
+from .utils import format_violation_detail, only_champion_changed
 
 
 class PlayerCardMixin:
@@ -60,8 +60,7 @@ class PlayerCardMixin:
         )
         card.pack(fill='x', pady=3, before=before)
         card._champion_id = champion_id
-        card._icon_label = None
-        card._placeholder_label = None
+        card._player_data = player
         # 记录基础边框（自己=金/违规=红/普通），取消选中时还原
         card._base_border_color = border_color
         card._base_border_width = border_w
@@ -69,20 +68,19 @@ class PlayerCardMixin:
         content = ctk.CTkFrame(card, fg_color='transparent')
         content.pack(fill='x', padx=8, pady=6)
 
-        # 英雄头像（已下载则显示，否则占位）
+        # 英雄头像：统一用一个 Label，后续换英雄时就地 configure，不重建控件
         icon = self.champion_data.get_champion_icon(champion_id, size=36)
-        if icon:
-            icon_label = ctk.CTkLabel(content, image=icon, text='', width=40)
-            icon_label.pack(side='left', padx=(0, 6))
-            card._icon_label = icon_label
-        else:
-            placeholder = ctk.CTkLabel(
-                content, text='?', width=40,
-                font=('Microsoft YaHei', 16, 'bold'),
-                text_color=self.COLORS['text_secondary']
-            )
-            placeholder.pack(side='left', padx=(0, 6))
-            card._placeholder_label = placeholder
+        icon_label = ctk.CTkLabel(
+            content,
+            image=icon if icon else None,
+            text='' if icon else '?',
+            width=40,
+            font=('Microsoft YaHei', 16, 'bold'),
+            text_color=self.COLORS['text_secondary'],
+        )
+        icon_label.pack(side='left', padx=(0, 6))
+        card._icon_label = icon_label
+        card._icon_image = icon
 
         # 右侧信息区（两行）
         info_frame = ctk.CTkFrame(content, fg_color='transparent')
@@ -126,11 +124,15 @@ class PlayerCardMixin:
         else:
             display_text = display_name
 
-        ctk.CTkLabel(
+        name_label = ctk.CTkLabel(
             row1, text=display_text,
             font=('Microsoft YaHei', 12, 'bold' if is_self else 'normal'),
             text_color=name_color
-        ).pack(side='left', padx=(2, 0))
+        )
+        name_label.pack(side='left', padx=(2, 0))
+        card._name_label = name_label
+        card._name_text = display_text
+        card._name_color = name_color
 
         if violation_count > 0:
             ctk.CTkLabel(
@@ -151,8 +153,9 @@ class PlayerCardMixin:
             ).pack(fill='x', pady=(1, 0))
 
         # 点击选择 + 悬停高亮（递归绑定到所有子控件）
+        # 注意：closure 使用 card._player_data，保证就地更新后点击拿到最新数据
         def on_click(e=None):
-            self._on_card_selected(player, card)
+            self._on_card_selected(card._player_data, card)
 
         def _bind_recursive(w):
             w.bind('<Button-1>', on_click)
@@ -164,14 +167,97 @@ class PlayerCardMixin:
 
         return card
 
+    def _update_card_champion(self, card, player):
+        """就地在原卡片上更新英雄头像与英雄名，不重建卡片（避免换英雄闪烁）"""
+        champion_id = player.get('champion_id', 0)
+        card._champion_id = champion_id
+        card._player_data = player
+
+        icon_label = getattr(card, '_icon_label', None)
+        if icon_label is not None:
+            icon = self.champion_data.get_champion_icon(champion_id, size=36)
+            # 同一张图重复 configure 也会触发重绘；只在图片对象变化时更新
+            if getattr(card, '_icon_image', None) is not icon:
+                if icon:
+                    icon_label.configure(image=icon, text='')
+                else:
+                    # CTkLabel 对 image=None 不会清空底层 Tk 图片，用 '' 才能真正移除旧头像
+                    icon_label.configure(image='', text='?')
+                card._icon_image = icon
+
+        name_label = getattr(card, '_name_label', None)
+        if name_label is None:
+            return
+
+        puuid = player.get('puuid', '')
+        violation_count = self.violation_counts.get(puuid, 0) if puuid else 0
+        is_hidden = player.get('is_hidden', False)
+        display_name = '隐藏玩家' if is_hidden else player.get('riot_id', '未知')
+
+        if is_hidden:
+            name_color = self.COLORS['text_secondary']
+        elif violation_count > 0:
+            name_color = self.COLORS['red']
+        else:
+            name_color = self.COLORS['text_primary']
+
+        champion_cn = self.champion_data.get_champion_name(champion_id)
+        if champion_cn and not is_hidden:
+            display_text = f'{champion_cn} · {display_name}'
+        else:
+            display_text = display_name
+
+        if getattr(card, '_name_text', None) != display_text:
+            name_label.configure(text=display_text)
+            card._name_text = display_text
+        if getattr(card, '_name_color', None) != name_color:
+            name_label.configure(text_color=name_color)
+            card._name_color = name_color
+
+    def _refresh_team_cards(self, team_frame):
+        """头像/英雄名就绪后就地刷新卡片内容（不重建卡片）"""
+        for card in team_frame.pack_slaves():
+            player = getattr(card, '_player_data', None)
+            if player is not None:
+                self._update_card_champion(card, player)
+
+    def _update_changed_cards(self, team_frame, old_team, new_team):
+        """更新变化的卡片：仅英雄变化时原位更新，其他字段变化才重建"""
+        any_changed = False
+        updated_selected = None
+        cards = team_frame.pack_slaves()
+        for idx, (old_p, new_p) in enumerate(zip(old_team, new_team)):
+            if old_p == new_p:
+                continue
+            any_changed = True
+            if idx >= len(cards):
+                continue
+            card = cards[idx]
+            if only_champion_changed(old_p, new_p):
+                # 换英雄：头像/名字就地更新，避免销毁重建导致闪烁
+                self._update_card_champion(card, new_p)
+            else:
+                was_selected = card is self._selected_card
+                next_sibling = cards[idx + 1] if idx + 1 < len(cards) else None
+                card.destroy()
+                card = self._create_player_card(
+                    team_frame, new_p, idx + 1, before=next_sibling)
+                if was_selected:
+                    self._selected_card = card
+                # 卡片被替换后，按 pack 顺序重新获取列表
+                cards = team_frame.pack_slaves()
+            if card is self._selected_card:
+                updated_selected = (new_p, card)
+        return any_changed, updated_selected
+
     def _get_champion_display(self, champion_id):
-        """生成英雄显示文本；champion_id为0表示选人阶段未展示英雄"""
+        """生成英雄显示文本；champion_id为0表示当前尚未选定英雄"""
         champion_cn = self.champion_data.get_champion_name(champion_id)
         if champion_cn:
             return f'{champion_cn} (ID:{champion_id})'
         if champion_id:
             return f'ID:{champion_id}'
-        return '未选定（选人阶段不显示英雄）'
+        return '未选定英雄'
 
     def _build_detail_lines(self, player, puuid):
         """构建玩家详情文本行（点击卡片与违规明细刷新共用）"""
@@ -189,7 +275,8 @@ class PlayerCardMixin:
 
     def _on_card_selected(self, player, card):
         """玩家卡片被点击：高亮选中并更新详情"""
-        if self._selected_card and self._selected_card.winfo_exists():
+        if (self._selected_card and self._selected_card is not card
+                and self._selected_card.winfo_exists()):
             # 还原上一张卡片的背景与基础边框（自己=金/违规=红/普通）
             self._selected_card.configure(
                 fg_color=self.COLORS['card_hover'],
@@ -198,11 +285,13 @@ class PlayerCardMixin:
                 border_width=getattr(self._selected_card, '_base_border_width', 1),
             )
         # 选中态：蓝调背景 + 蓝色加粗边框，与悬停态明显区分
-        card.configure(
-            fg_color=self.COLORS['selected'],
-            border_color=self.COLORS['blue'],
-            border_width=2,
-        )
+        # 已经是选中卡片时跳过重复 configure，避免换英雄时触发无意义重绘
+        if card is not self._selected_card:
+            card.configure(
+                fg_color=self.COLORS['selected'],
+                border_color=self.COLORS['blue'],
+                border_width=2,
+            )
         self._selected_card = card
         self.selected_player = player
 

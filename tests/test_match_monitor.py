@@ -131,7 +131,7 @@ def test_lobby_phase_clears_caches_and_emits_clear():
     assert service._cached_bp_match_data is None
 
 
-def test_champ_select_event_updates_cache_and_strips_champion_for_ui():
+def test_champ_select_event_updates_cache_and_sends_champion_for_ui():
     service, transport, events = make_service()
     service.start()
     service._current_summoner_puuid = 'p1'
@@ -140,7 +140,8 @@ def test_champ_select_event_updates_cache_and_strips_champion_for_ui():
     transport.emit(CHAMP_SELECT_URI, CHAMP_SELECT_SESSION, 'Update')
 
     assert service._cached_bp_match_data['my_team'][0]['champion_id'] == 103
-    assert events['match_updated'][-1][0]['my_team'][0]['champion_id'] == 0
+    # 选人阶段保留 champion_id，GUI 才能显示头像并在原卡片上更新
+    assert events['match_updated'][-1][0]['my_team'][0]['champion_id'] == 103
     assert service._puuid_cache['我#0001'] == 'p1'
     assert service._cached_bp_match_data['myself']['role'] == '自己'
 
