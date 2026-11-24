@@ -37,6 +37,7 @@ MODE_HINTS = {
 
 HIDDEN_NAME = '隐藏玩家'
 UNKNOWN_NAME = '未知'
+ICON_MARGIN = 4
 
 
 def phase_mode(phase):
@@ -151,6 +152,31 @@ def collect_puuids(match_data):
                 seen.add(puuid)
                 puuids.append(puuid)
     return puuids
+
+
+def snap_icon_position(x, y, icon_size, work_area, anchor_x=None):
+    """收起后的小图标贴边定位。
+
+    水平方向吸附到工作区最近的左 / 右边缘，垂直方向限制在工作区内。
+    icon_size: (w, h) 图标尺寸
+    work_area: (left, top, right, bottom) 图标所在显示器的工作区
+    anchor_x: 判断贴左 / 贴右的参考点，默认用图标中心；
+              从面板收起时传入面板中心，避免按图标左边缘判断错边
+    """
+    width, height = icon_size
+    left, top, right, bottom = work_area
+
+    min_x = left + ICON_MARGIN
+    max_x = max(min_x, right - width - ICON_MARGIN)
+    min_y = top + ICON_MARGIN
+    max_y = max(min_y, bottom - height - ICON_MARGIN)
+
+    y = max(min_y, min(int(y), max_y))
+    if anchor_x is None:
+        anchor_x = int(x) + width // 2
+    if int(anchor_x) < (left + right) // 2:
+        return int(min_x), int(y)
+    return int(max_x), int(y)
 
 
 def compute_overlay_position(target_rect, overlay_size, offset, work_area):

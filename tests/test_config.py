@@ -10,6 +10,8 @@ def test_load_defaults_when_missing(tmp_path):
     assert config['overlay_auto_query'] is True
     assert config['overlay_alpha'] == 0.95
     assert config['overlay_offset'] == [12, 56]
+    assert config['overlay_collapsed'] is False
+    assert config['overlay_icon_pos'] is None
     # 返回副本，修改不会污染模块级默认值
     config['overlay_offset'].append(1)
     assert DEFAULT_CONFIG['overlay_offset'] == [12, 56]
@@ -69,6 +71,37 @@ def test_alpha_and_offset_clamped(tmp_path):
     config['overlay_alpha'] = 0.1
     save_config(config, path)
     assert load_config(path)['overlay_alpha'] == 0.55
+
+
+def test_overlay_collapse_fields(tmp_path):
+    path = tmp_path / 'config.json'
+    path.write_text(json.dumps({
+        'overlay_collapsed': True,
+        'overlay_icon_pos': [1900, 500],
+    }), encoding='utf-8')
+    config = load_config(path)
+    assert config['overlay_collapsed'] is True
+    assert config['overlay_icon_pos'] == [1900, 500]
+
+    path.write_text(json.dumps({
+        'overlay_collapsed': 'yes',
+        'overlay_icon_pos': 'bad',
+    }), encoding='utf-8')
+    config = load_config(path)
+    assert config['overlay_collapsed'] is False
+    assert config['overlay_icon_pos'] is None
+
+
+def test_overlay_icon_pos_roundtrip(tmp_path):
+    path = tmp_path / 'config.json'
+    config = load_config(path)
+    config['overlay_collapsed'] = True
+    config['overlay_icon_pos'] = [-1800, 300]
+    assert save_config(config, path) is True
+
+    loaded = load_config(path)
+    assert loaded['overlay_collapsed'] is True
+    assert loaded['overlay_icon_pos'] == [-1800, 300]
 
 
 def test_hotkey_fields(tmp_path):

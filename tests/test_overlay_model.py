@@ -12,6 +12,7 @@ from lol_match_query.gui.overlay_model import (
     geometry_position,
     match_signature,
     phase_mode,
+    snap_icon_position,
     truncate_name,
 )
 
@@ -164,3 +165,40 @@ def test_geometry_position():
     assert geometry_position(100, 50) == '+100+50'
     assert geometry_position(-1920, 0) == '-1920+0'
     assert geometry_position(0, -60) == '+0-60'
+
+
+def test_snap_icon_position_right():
+    # 图标在屏幕右半边 → 贴右边
+    assert snap_icon_position(1900, 500, (46, 46), (0, 0, 1920, 1080)) == (
+        1920 - 46 - 4, 500)
+
+
+def test_snap_icon_position_left():
+    # 图标在屏幕左半边 → 贴左边
+    assert snap_icon_position(100, 500, (46, 46), (0, 0, 1920, 1080)) == (4, 500)
+
+
+def test_snap_icon_position_clamp_vertical():
+    x, y = snap_icon_position(1900, 5000, (46, 46), (0, 0, 1920, 1080))
+    assert (x, y) == (1920 - 46 - 4, 1080 - 46 - 4)
+    x, y = snap_icon_position(1900, -500, (46, 46), (0, 0, 1920, 1080))
+    assert (x, y) == (1920 - 46 - 4, 4)
+
+
+def test_snap_icon_position_negative_origin():
+    # 副屏在主屏左侧：工作区坐标为负
+    assert snap_icon_position(-1900, 100, (46, 46), (-1920, 0, 0, 1080)) == (
+        -1920 + 4, 100)
+    assert snap_icon_position(-100, 100, (46, 46), (-1920, 0, 0, 1080)) == (
+        0 - 46 - 4, 100)
+
+
+def test_snap_icon_position_anchor():
+    # 面板在右半边：虽然图标左边缘 912 偏左，按面板中心判断应贴右边
+    assert snap_icon_position(
+        912, 500, (46, 46), (0, 0, 1920, 1080),
+        anchor_x=912 + 272 // 2) == (1920 - 46 - 4, 500)
+    # 面板在左半边 → 贴左边
+    assert snap_icon_position(
+        300, 500, (46, 46), (0, 0, 1920, 1080),
+        anchor_x=300 + 272 // 2) == (4, 500)

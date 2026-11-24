@@ -26,6 +26,7 @@ from .overlay_model import (
     is_active_mode,
     match_signature,
     phase_mode,
+    snap_icon_position,
     truncate_name,
 )
 from .utils import safe_int
@@ -33,11 +34,14 @@ from .utils import safe_int
 LOGGER = logging.getLogger('lol_match_query')
 
 OVERLAY_WIDTH = 272
+MINI_SIZE = 46
 TICK_MS = 250
 QUERY_DEBOUNCE_MS = 700
 QUERY_RETRY_SECONDS = 30
 DRAG_SAVE_DELAY_MS = 800
 OFFSET_LIMIT = 4000
+MINI_DRAG_THRESHOLD = 3
+MINI_BORDER_COLOR = '#3a4150'
 
 BADGE_COLORS = {
     'champ_select': '#FB8C00',
@@ -47,10 +51,14 @@ BADGE_COLORS = {
 
 
 class OverlayWindow:
-    """无边框置顶悬浮窗（可拖拽，不进入任务栏/Alt-Tab）"""
+    """无边框置顶悬浮窗（可拖拽，不进入任务栏/Alt-Tab）
+
+    支持收起为贴边小图标：头部「—」收起，点击图标展开，拖动图标可换位置。
+    """
 
     def __init__(self, master, colors, champion_data, alpha=0.95, on_close=None,
-                 on_drag=None, on_drag_end=None):
+                 on_drag=None, on_drag_end=None, collapsed=False,
+                 on_collapse_change=None, on_icon_moved=None):
         self.master = master
         self.colors = colors
         self.champion_data = champion_data
@@ -58,6 +66,9 @@ class OverlayWindow:
         self.on_close = on_close
         self.on_drag = on_drag
         self.on_drag_end = on_drag_end
+        self.on_collapse_change = on_collapse_change
+        self.on_icon_moved = on_icon_moved
+        self.collapsed = bool(collapsed)
 
         self._signature = None
         self._pos = None
@@ -65,6 +76,8 @@ class OverlayWindow:
         self._height = 120
         self._hwnd = 0
         self._drag_origin = None
+        self._mini_drag = None
+        self._mini_moved = False
         self._build()
 
     # ===== 构建 =====
@@ -83,7 +96,6 @@ class OverlayWindow:
         self._container = ctk.CTkFrame(
             self.top, fg_color=self.colors['card'], corner_radius=10,
             border_width=1, border_color='#3a4150')
-        self._container.pack(fill='both', expand=True)
 
         header = ctk.CTkFrame(self._container, fg_color='transparent')
         header.pack(fill='x', padx=10, pady=(7, 2))
@@ -111,6 +123,14 @@ class OverlayWindow:
             text_color=self.colors['text_secondary'], command=self._close)
         self._close_btn.pack(side='right')
 
+        self._collapse_btn = ctk.CTkButton(
+            header, text='—', width=20, height=20, corner_radius=4,
+            fg_color='transparent', hover_color='#3a4150',
+            font=('Microsoft YaHei', 10),
+            text_color=self.colors['text_secondary'],
+            command=self._toggle_collapse)
+        self._collapse_btn.pack(side='right', padx=(0, 2))
+
         self._body = ctk.CTkFrame(self._container, fg_color='transparent')
         self._body.pack(fill='x', padx=8, pady=(0, 2))
 
@@ -123,6 +143,35 @@ class OverlayWindow:
         # 头部与空白处可拖拽，关闭按钮不参与
         for widget in (self._container, header, self._dot, self._title, self._badge):
             self._bind_drag(widget)
+
+        self._build_mini()
+        if self.collapsed:
+            self._mini.pack(fill='both', expand=True)
+        else:
+            self._container.pack(fill='both', expand=True)
+
+    def _build_mini(self):
+        """收起后的小图标：色点表示阶段，数字表示标记人数，点击展开"""
+        self._mini = ctk.CTkFrame(
+            self.top, fg_color=self.colors['card'], corner_radius=10,
+            border_width=1, border_color=MINI_BORDER_COLOR)
+
+        self._mini_dot = ctk.CTkLabel(
+            self._mini, text='●', font=('Microsoft YaHei', 8),
+            text_color=self.colors['text_secondary'])
+        self._mini_dot.place(relx=0.11, rely=0.10)
+
+        self._mini_count = ctk.CTkLabel(
+            self._mini, text='·', font=('Microsoft YaHei', 16, 'bold'),
+            text_color=self.colors['text_secondary'])
+        self._mini_count.place(relx=0.5, rely=0.57, anchor='center')
+
+        for widget in (self._mini, self._mini_dot, self._mini_count):
+            widget.bind('<Enter>', self._mini_enter)
+            widget.bind('<Leave>', self._mini_leave)
+            widget.bind('<ButtonPress-1>', self._mini_press)
+            widget.bind('<B1-Motion>', self._mini_move)
+            widget.bind('<ButtonRelease-1>', self._mini_release)
 
     def _bind_drag(self, widget):
         widget.bind('<ButtonPress-1>', self._drag_start)
@@ -146,17 +195,106 @@ class OverlayWindow:
         x = win_x + (event.x_root - origin_x)
         y = win_y + (event.y_root - origin_y)
         self.set_position(x, y)
-        if self.on_drag:
+        if self.on_drag and not self.collapsed:
             self.on_drag(x, y)
 
     def _drag_end(self, _event):
         self._drag_origin = None
+        if self.collapsed:
+            self._snap_mini()
+            return
         if self.on_drag_end:
             self.on_drag_end()
 
     def _close(self):
         if self.on_close:
             self.on_close()
+
+    # ===== 收起 / 展开 =====
+
+    def _toggle_collapse(self):
+        self.set_collapsed(not self.collapsed)
+
+    def set_collapsed(self, collapsed, notify=True):
+        """切换完整面板 / 贴边小图标；展开时恢复面板尺寸并回由控制器重新定位"""
+        collapsed = bool(collapsed)
+        if collapsed == self.collapsed:
+            return
+        self.collapsed = collapsed
+        if collapsed:
+            # 用面板中心判断贴左/右，避免面板整体偏右但左边缘偏左时贴错边
+            anchor_x = None
+            if self._pos is not None:
+                anchor_x = self._pos[0] + self._width // 2
+            self._container.pack_forget()
+            self._mini.pack(fill='both', expand=True)
+            self._resize()
+            self._snap_mini(anchor_x)
+        else:
+            self._mini.pack_forget()
+            self._container.pack(fill='both', expand=True)
+            self._resize()
+        if notify and self.on_collapse_change:
+            self.on_collapse_change(collapsed)
+
+    def position(self):
+        return self._pos
+
+    def is_dragging_mini(self):
+        """拖动小图标期间暂停自动定位，避免和跟随刷新打架"""
+        return self._mini_drag is not None
+
+    def _snap_mini(self, anchor_x=None):
+        """把图标吸附到所在显示器最近的左右边缘"""
+        if self._pos is not None:
+            x, y = self._pos
+        else:
+            x, y = self.top.winfo_x(), self.top.winfo_y()
+        width, height = self.size()
+        if anchor_x is None:
+            anchor_x = x + width // 2
+        work_area = win32.work_area_at_point(anchor_x, y + height // 2)
+        if not work_area:
+            return
+        self.set_position(*snap_icon_position(
+            x, y, (width, height), work_area, anchor_x=anchor_x))
+
+    def _mini_enter(self, _event):
+        self._mini.configure(
+            fg_color=self.colors['card_hover'],
+            border_color=self.colors['gold'])
+
+    def _mini_leave(self, _event):
+        self._mini.configure(
+            fg_color=self.colors['card'], border_color=MINI_BORDER_COLOR)
+
+    def _mini_press(self, event):
+        if self._pos is not None:
+            win_x, win_y = self._pos
+        else:
+            win_x, win_y = self.top.winfo_x(), self.top.winfo_y()
+        self._mini_drag = (event.x_root, event.y_root, win_x, win_y)
+        self._mini_moved = False
+
+    def _mini_move(self, event):
+        if not self._mini_drag:
+            return
+        origin_x, origin_y, win_x, win_y = self._mini_drag
+        dx = event.x_root - origin_x
+        dy = event.y_root - origin_y
+        if not self._mini_moved and abs(dx) + abs(dy) > MINI_DRAG_THRESHOLD:
+            self._mini_moved = True
+        if self._mini_moved:
+            self.set_position(win_x + dx, win_y + dy)
+
+    def _mini_release(self, _event):
+        self._mini_drag = None
+        if not self._mini_moved:
+            self.set_collapsed(False)
+            return
+        self._snap_mini()
+        if self.on_icon_moved:
+            self.on_icon_moved(self._pos)
 
     # ===== 渲染 =====
 
@@ -168,6 +306,7 @@ class OverlayWindow:
         mode = model.get('mode')
         color = BADGE_COLORS.get(mode, self.colors['text_secondary'])
         self._dot.configure(text_color=color)
+        self._update_mini(model, status_text)
 
         signature = self._make_signature(model)
         if signature != self._signature:
@@ -175,6 +314,23 @@ class OverlayWindow:
             self._signature = signature
         self._footer.configure(text=status_text)
         self._resize()
+
+    def _update_mini(self, model, status_text=''):
+        """小图标：色点跟随阶段，数字为标记人数（查询中显示 …）"""
+        self._mini_dot.configure(
+            text_color=BADGE_COLORS.get(
+                model.get('mode'), self.colors['text_secondary']))
+        flagged = int(model.get('flagged') or 0)
+        known = int(model.get('known') or 0)
+        if '查询中' in (status_text or '') or known == 0:
+            text, color = '…', self.colors['text_secondary']
+        elif flagged > 0:
+            text, color = str(flagged), self.colors['red']
+        else:
+            text, color = '0', self.colors['text_secondary']
+        if str(self._mini_count.cget('text')) != text:
+            self._mini_count.configure(text=text)
+        self._mini_count.configure(text_color=color)
 
     @staticmethod
     def _make_signature(model):
@@ -248,6 +404,15 @@ class OverlayWindow:
                 text_color=self.colors['text_secondary']).pack(side='right', padx=(2, 6))
 
     def _resize(self):
+        if self.collapsed:
+            size = self._scaled_size(MINI_SIZE)
+            if (size == self._width and size == self._height
+                    and self.top.winfo_width() == size):
+                return
+            self._width = self._height = size
+            self.top.geometry(f'{size}x{size}')
+            return
+
         self.top.update_idletasks()
         height = int(self._container.winfo_reqheight() or 0)
         if height < 10:
@@ -262,12 +427,15 @@ class OverlayWindow:
 
     def _scaled_width(self):
         """按 customtkinter 的 DPI 缩放换算窗口宽度，避免高 DPI 下内容被裁切"""
+        return max(180, self._scaled_size(OVERLAY_WIDTH))
+
+    def _scaled_size(self, base):
         scale = 1.0
         try:
             scale = float(ctk.ScalingTracker.get_window_scaling(self.top) or 1.0)
         except Exception:
             scale = 1.0
-        return max(180, int(OVERLAY_WIDTH * scale))
+        return max(base, int(base * scale))
 
     # ===== 显示控制 =====
 
@@ -323,6 +491,9 @@ class OverlayController:
         self._counts = {}
         self._self_puuid = ''
         self._offset = self._normalize_offset(self.config.get('overlay_offset'))
+        self._collapsed = bool(self.config.get('overlay_collapsed'))
+        self._icon_pos = self._normalize_icon_pos(
+            self.config.get('overlay_icon_pos'))
         self._target_hwnd = 0
         self._target_rect = None
         self._status = '等待对局'
@@ -347,12 +518,17 @@ class OverlayController:
                     alpha=self.config.get('overlay_alpha', 0.95),
                     on_close=self._on_window_close,
                     on_drag=self._on_drag,
-                    on_drag_end=self._on_drag_end)
+                    on_drag_end=self._on_drag_end,
+                    collapsed=self._collapsed,
+                    on_collapse_change=self._on_collapse_change,
+                    on_icon_moved=self._on_icon_moved)
             except Exception:
                 LOGGER.exception('创建悬浮层失败')
                 self.window = None
                 return False
         self.enabled = True
+        if self.window.collapsed != self._collapsed:
+            self.window.set_collapsed(self._collapsed, notify=False)
         if self._match_data is None:
             self._status = '等待对局'
         self._apply()
@@ -369,7 +545,11 @@ class OverlayController:
     def shutdown(self):
         self.disable()
         self._cancel(self._query_job)
-        self._cancel(self._save_job)
+        # 退出前把待写入的拖拽/收起状态落盘，避免刚拖完就退出导致丢失
+        if self._save_job:
+            self._cancel(self._save_job)
+            self._save_job = None
+            save_config(self.config)
         if self.window is not None:
             self.window.destroy()
             self.window = None
@@ -568,11 +748,25 @@ class OverlayController:
         # 先定位再显示，避免首次出现时在屏幕角落闪一下
         work_area = win32.work_area(hwnd) or (
             0, 0, self.root.winfo_screenwidth(), self.root.winfo_screenheight())
-        x, y = compute_overlay_position(
-            rect, self.window.size(), self._offset, work_area)
+        if self.window.collapsed:
+            if self.window.is_dragging_mini():
+                return
+            x, y = self._icon_position(work_area)
+        else:
+            x, y = compute_overlay_position(
+                rect, self.window.size(), self._offset, work_area)
         self.window.set_position(x, y)
         if not self.window.is_visible():
             self.window.show()
+
+    def _icon_position(self, work_area):
+        """收起图标的坐标：优先用记住的位置，否则贴工作区右侧垂直居中"""
+        size = self.window.size()
+        pos = self._icon_pos
+        if pos is None:
+            left, top, right, bottom = work_area
+            pos = (right, top + (bottom - top) // 2)
+        return snap_icon_position(pos[0], pos[1], size, work_area)
 
     @staticmethod
     def _pick_target(mode):
@@ -609,10 +803,36 @@ class OverlayController:
 
     def _on_drag_end(self):
         self.config['overlay_offset'] = [self._offset[0], self._offset[1]]
-        self._cancel(self._save_job)
-        self._save_job = self.root.after(DRAG_SAVE_DELAY_MS, self._save_offset)
+        self._persist_later()
 
-    def _save_offset(self):
+    def _on_collapse_change(self, collapsed):
+        self._collapsed = bool(collapsed)
+        if collapsed and self._icon_pos is None and self.window is not None:
+            # 首次收起：记下窗口吸附到边缘后的位置，下次展开/收起沿用
+            self._icon_pos = self.window.position()
+        self.config['overlay_collapsed'] = self._collapsed
+        if self._icon_pos is not None:
+            self.config['overlay_icon_pos'] = [
+                int(self._icon_pos[0]), int(self._icon_pos[1])]
+        self._persist_later()
+        self._apply()
+        try:
+            self._follow_target()
+        except Exception:
+            LOGGER.exception('悬浮层收起状态切换失败')
+
+    def _on_icon_moved(self, pos):
+        if pos is None:
+            return
+        self._icon_pos = (int(pos[0]), int(pos[1]))
+        self.config['overlay_icon_pos'] = [self._icon_pos[0], self._icon_pos[1]]
+        self._persist_later()
+
+    def _persist_later(self):
+        self._cancel(self._save_job)
+        self._save_job = self.root.after(DRAG_SAVE_DELAY_MS, self._write_config)
+
+    def _write_config(self):
         self._save_job = None
         save_config(self.config)
 
@@ -620,6 +840,15 @@ class OverlayController:
         self.app._set_overlay_enabled(False)
 
     # ===== 工具 =====
+
+    @staticmethod
+    def _normalize_icon_pos(value):
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            return None
+        try:
+            return (int(value[0]), int(value[1]))
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _normalize_offset(value):
