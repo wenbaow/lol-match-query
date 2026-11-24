@@ -11,15 +11,17 @@ from tkinter import messagebox
 
 import customtkinter as ctk
 
+from ..config import load_config, save_config
 from ..services.champions import ChampionDataProvider
 from ..services.match_monitor import MatchMonitorService
 from ..services.violation import ViolationClient
-from .agent_ui import AgentUIMixin
 from .dialogs import DialogMixin
+from .overlay import OverlayController
 from .player_card import PlayerCardMixin
+from .quick_lookup import QuickLookupController
 
 
-class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
+class MatchQueryGUI(PlayerCardMixin, DialogMixin):
     PHASE_DESCRIPTIONS = {
         'None': '空闲 / 客户端主界面',
         'Lobby': '组队房间',
@@ -49,6 +51,7 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
 
     def __init__(self, root):
         self.root = root
+        self.config = load_config()
 
         self.match_service = MatchMonitorService()
         # GUI 只通过事件订阅服务，不读取服务内部状态
@@ -63,6 +66,8 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
         self.is_running = False
         self.current_phase = 'None'
         self.account_info = {}
+        self.overlay = None
+        self.quick_lookup = None
         self.violation_counts = {}
         self.violation_details = {}
         self._violation_detail_querying = set()  # 正在查询违规详情的 puuid 集合
@@ -76,13 +81,17 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
         self._icon_preload_pending = []
 
         self._build_ui()
+        # 悬浮层：跟随客户端/游戏窗口展示对局标记（可在按钮栏关闭）
+        self.overlay = OverlayController(self)
+        if self.config.get('overlay_enabled'):
+            self._set_overlay_enabled(True, persist=False)
+        # 全局热键速查：复制 Riot ID 后按热键，在鼠标旁弹出违规次数
+        self.quick_lookup = QuickLookupController(self)
+        self._setup_hotkey()
         # 后台初始化英雄数据，完成后若有缓存对局则刷新卡片以显示头像
         self.champion_data.initialize_async(
             done_callback=lambda: self.root.after(0, self._refresh_cards_if_needed)
         )
-        # 启动 AgentQuay 接入（后台连接 + 队列轮询），Agent 即可通过 MCP 调用本应用工具
-        self.start_agent_service()
-
     def _build_ui(self):
         self.root.configure(fg_color=self.COLORS['bg'])
 
@@ -152,12 +161,6 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
         )
         self.phase_label.pack(side='right', padx=25)
 
-        self.agent_label = ctk.CTkLabel(
-            status_inner, text='Agent: 未接入', font=('Microsoft YaHei', 11),
-            text_color=self.COLORS['text_secondary']
-        )
-        self.agent_label.pack(side='right', padx=25)
-
         # ===== 按钮栏 =====
         btn_frame = ctk.CTkFrame(main_frame, fg_color='transparent')
         btn_frame.pack(fill='x', pady=(0, 10))
@@ -177,6 +180,14 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
             command=self.refresh_manual
         )
         self.refresh_btn.pack(side='left')
+
+        self.overlay_btn = ctk.CTkButton(
+            btn_frame, text='悬浮层: 开', font=('Microsoft YaHei', 12),
+            width=110, height=38, corner_radius=8,
+            fg_color=self.COLORS['card_hover'], hover_color=self.COLORS['card_hover_active'],
+            command=self._toggle_overlay
+        )
+        self.overlay_btn.pack(side='left', padx=(10, 0))
 
         # ===== 队伍区域 =====
         self.teams_frame = ctk.CTkFrame(main_frame, fg_color='transparent')
@@ -238,6 +249,12 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
             command=self._on_report_violation_click
         )
         self.report_violation_btn.pack(side='left')
+
+        self.hotkey_label = ctk.CTkLabel(
+            violation_inner, text='', font=('Microsoft YaHei', 9),
+            text_color=self.COLORS['text_secondary']
+        )
+        self.hotkey_label.pack(side='right')
 
         self.violation_status_label = ctk.CTkLabel(
             violation_inner, text='', font=('Microsoft YaHei', 10),
@@ -369,6 +386,8 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
                 self._start_blinking(self.COLORS['green'], '请接受对局!')
             else:
                 self._stop_blinking()
+            if self.overlay is not None:
+                self.overlay.on_phase(phase)
         self.root.after(0, _update)
 
     def _on_account(self, account_info):
@@ -383,6 +402,8 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
         puuid = account_info.get('puuid', '')
         if puuid:
             parts.append(f'PUUID: {puuid}')
+        if self.overlay is not None:
+            self.overlay.on_account(account_info)
         self.root.after(0, lambda: self.account_label.configure(text=' | '.join(parts)))
 
     def toggle_monitor(self):
@@ -407,6 +428,8 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
         self.is_running = False
         self._stop_blinking()
         self.match_service.stop()
+        if self.overlay is not None:
+            self.overlay.on_stop()
         self.start_btn.configure(text='启动工具', fg_color=self.COLORS['green'])
         self.status_label.configure(text='● 已停止', text_color=self.COLORS['text_secondary'])
 
@@ -430,6 +453,71 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
         if not self.match_service.refresh(done_callback=_done):
             self.refresh_btn.configure(state='normal', text='刷新信息')
             self.violation_status_label.configure(text='刷新正在进行中，请稍候')
+
+    # ===== 悬浮层 =====
+
+    def _toggle_overlay(self):
+        current = bool(self.overlay and self.overlay.enabled)
+        self._set_overlay_enabled(not current)
+
+    def _set_overlay_enabled(self, enabled, persist=True):
+        """开启/关闭悬浮层；persist=False 用于启动时恢复配置，避免重复写盘"""
+        if self.overlay is None:
+            return
+        if enabled:
+            enabled = self.overlay.enable()
+            if not enabled:
+                messagebox.showwarning('提示', '悬浮层初始化失败，详情见日志')
+        else:
+            self.overlay.disable()
+        self._sync_overlay_button(enabled)
+        if persist:
+            self.config['overlay_enabled'] = bool(enabled)
+            save_config(self.config)
+
+    def _sync_overlay_button(self, enabled):
+        if not hasattr(self, 'overlay_btn'):
+            return
+        self.overlay_btn.configure(
+            text='悬浮层: 开' if enabled else '悬浮层: 关',
+            fg_color=self.COLORS['blue'] if enabled else self.COLORS['card_hover'],
+            hover_color='#0288D1' if enabled else self.COLORS['card_hover_active'],
+        )
+
+    def _apply_violation_counts(self, counts, status_text=None):
+        """统一更新违规次数：主窗口卡片 + 悬浮层 + 状态文案"""
+        self.violation_counts = dict(counts or {})
+        if self._match_data_cache:
+            self._render_full(self._match_data_cache)
+        if status_text is not None:
+            self.violation_status_label.configure(text=status_text)
+        if self.overlay is not None:
+            self.overlay.on_counts_updated(self.violation_counts)
+
+    # ===== 全局热键速查 =====
+
+    def _setup_hotkey(self):
+        """注册全局热键，结果显示在违规操作行右侧"""
+        if self.quick_lookup is None:
+            return
+        if not self.config.get('hotkey_enabled', True):
+            self.hotkey_label.configure(text='速查热键: 已关闭')
+            return
+        if self.quick_lookup.start():
+            self.hotkey_label.configure(
+                text=f'速查 {self.quick_lookup.hotkey_text}（复制 Riot ID 后按）',
+                text_color=self.COLORS['text_secondary'])
+        else:
+            self.hotkey_label.configure(
+                text=self.quick_lookup.error or '速查热键不可用',
+                text_color=self.COLORS['red'])
+
+    def shutdown(self):
+        """退出前释放悬浮层与全局热键（取消定时器、销毁窗口）"""
+        if self.overlay is not None:
+            self.overlay.shutdown()
+        if self.quick_lookup is not None:
+            self.quick_lookup.stop()
 
     def _on_match_data(self, data):
         self.root.after(0, lambda: self._update_match_data(data))
@@ -468,9 +556,13 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
             self.detail_text.pack_forget()
             self.detail_toggle_label.configure(text='▶ 详细信息')
             self._detail_expanded = False
+        if self.overlay is not None:
+            self.overlay.on_clear()
 
     def _update_match_data(self, match_data):
         stage = match_data.get('stage', '')
+        if self.overlay is not None:
+            self.overlay.on_match_data(match_data)
         if stage == 'champ_select':
             self._update_champ_select_partial(match_data)
         else:
@@ -630,6 +722,8 @@ class MatchQueryGUI(PlayerCardMixin, DialogMixin, AgentUIMixin):
                 self._update_champ_select_partial(self._match_data_cache)
             else:
                 self._update_match_data(self._match_data_cache)
+        if self.overlay is not None:
+            self.overlay.refresh()
 
     def _set_detail_text(self, text):
         self.detail_text.configure(state='normal')

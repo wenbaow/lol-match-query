@@ -29,8 +29,6 @@ dependencies = [
     "customtkinter>=5.0.0",
     "Pillow>=8.0.0",
     "urllib3>=1.26.0",
-    # AgentQuay SDK：已发布到 PyPI，按包名安装即可
-    "agentquay-sdk>=0.3.0",
 ]
 
 [project.optional-dependencies]

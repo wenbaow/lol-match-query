@@ -453,7 +453,7 @@ class DialogMixin:
                         messagebox.showerror('查询失败', msg)
                         return
 
-                    self.violation_counts = {}
+                    counts = {}
                     flagged_count = 0
                     for item in data:
                         if not isinstance(item, dict):
@@ -462,16 +462,14 @@ class DialogMixin:
                         if not puuid:
                             continue
                         count = safe_int(item.get('violationCount'))
-                        self.violation_counts[puuid] = count
+                        counts[puuid] = count
                         if count > 0:
                             flagged_count += 1
 
-                    # 刷新队伍列表显示违规标注（强制完整渲染，避免BP增量更新遗漏违规标记）
-                    if self._match_data_cache:
-                        self._render_full(self._match_data_cache)
-
-                    self.violation_status_label.configure(
-                        text=f'查询完成: {flagged_count}/{len(data)} 人有违规记录')
+                    # 统一走 _apply_violation_counts：主窗口卡片 + 悬浮层同步刷新
+                    self._apply_violation_counts(
+                        counts,
+                        status_text=f'查询完成: {flagged_count}/{len(data)} 人有违规记录')
                     self._on_log(
                         f'违规查询完成: {flagged_count}/{len(data)} 人有违规记录')
                 else:

@@ -6,7 +6,7 @@
 - WebSocket 连接、原始 JSON API 事件转发
 - gameflow-phase 兜底轮询
 
-对局阶段状态机、缓存和面向 UI/Agent 的事件由
+对局阶段状态机、缓存和面向 UI 的事件由
 ``services.match_monitor.MatchMonitorService`` 负责。
 """
 import json
@@ -33,7 +33,7 @@ class LCUClient:
         self.running = False
         self.lock = threading.Lock()
         self.log_callback = log_callback
-        # requests.Session 并非线程安全：WS/Timer/Agent 工具会并发请求，
+        # requests.Session 并非线程安全：WS/轮询/GUI 后台线程会并发请求，
         # 因此按线程各持有一个 Session
         self._session_local = threading.local()
         # WebSocket/轮询线程

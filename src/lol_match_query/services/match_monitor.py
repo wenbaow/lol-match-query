@@ -3,7 +3,7 @@
 职责：
 - 消费 LCU 传输层的原始事件（gameflow / champ-select / region-locale）
 - 维护对局阶段、BP 缓存、puuid 缓存、gameId、手动刷新等状态
-- 向 GUI / Agent 暴露少量方法和事件，不暴露内部字段
+- 向 GUI 暴露少量方法和事件，不暴露内部字段
 
 线程模型：
 - 事件在产生它们的线程上同步分发；GUI 订阅者需自行 ``root.after`` 回主线程。
@@ -14,8 +14,6 @@ import logging
 import re
 import threading
 import time
-
-from agentquay import agent_tool
 
 from ..lcu.events import (
     CHAMP_SELECT_URI,
@@ -658,8 +656,6 @@ class MatchMonitorService:
 
     # ===== 召唤师查询 =====
 
-    @agent_tool("search_summoner",
-                description="通过完整 Riot ID（游戏名#TAG）搜索召唤师，返回 PUUID 与 Riot ID 信息")
     def search_summoner(self, riot_id):
         """通过完整 Riot ID 搜索召唤师信息
 

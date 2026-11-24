@@ -44,11 +44,11 @@ def main():
 
 
 def _on_close(root, app):
-    """关闭窗口：先优雅断开 Agent 客户端，再销毁主窗口。"""
+    """关闭窗口：先释放悬浮层 / 热键，再销毁主窗口。"""
     try:
-        app.stop_agent_service()
+        app.shutdown()
     except Exception:
-        get_logger().exception('关闭 Agent 服务失败')
+        get_logger().exception('关闭悬浮层失败')
     get_logger().info('=== 应用退出 ===')
     root.destroy()
 
